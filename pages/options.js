@@ -83,27 +83,13 @@ function renderDiagnosticIdentity() {
 	storeNode.textContent = core.STORE_EXTENSION_ID;
 }
 
-function diagnosticStorageKeys(stored) {
-	return Object.keys(stored).filter(function(key) {
-		return key === DIAGNOSTIC_LOG_KEY || key.indexOf(DIAGNOSTIC_LOG_KEY + ".") === 0;
-	}).sort();
-}
-
 function downloadDiagnosticLog() {
 	const core = globalThis.Netflix1080pDiagCore;
 	const status = document.getElementById("log-status");
 	chrome.storage.local.get(null, function(stored) {
-		const keys = diagnosticStorageKeys(stored || {});
-		let payload = null;
-		keys.forEach(function(key) {
-			const part = stored[key];
-			payload = core.mergeExport(payload, part && part.events, {
-				extensionId: chrome.runtime.id,
-			});
+		const payload = core.mergeDiagnosticStorage(stored || {}, {
+			extensionId: chrome.runtime.id,
 		});
-		if (!payload) {
-			payload = core.emptyExport({ extensionId: chrome.runtime.id });
-		}
 		const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
 		const url = URL.createObjectURL(blob);
 		const link = document.createElement("a");
@@ -111,14 +97,21 @@ function downloadDiagnosticLog() {
 		link.download = "netflix-1080p-diagnostic.json";
 		link.click();
 		URL.revokeObjectURL(url);
-		if (status) status.textContent = "書き出しました。視聴IDやURLが含まれていないことを確認してから共有してください。";
+		if (status) {
+			const dropped = payload.retention && payload.retention.droppedOldest;
+			status.textContent = dropped
+				? "書き出しました。上限を超えた古い記録 " + dropped + " 件は落としています。視聴IDやURLが残っていないことを確認してください。"
+				: "書き出しました。視聴IDやURLが含まれていないことを確認してから共有してください。";
+		}
 	});
 }
 
 function clearDiagnosticLog() {
+	const core = globalThis.Netflix1080pDiagCore;
 	const status = document.getElementById("log-status");
 	chrome.storage.local.get(null, function(stored) {
-		const keys = diagnosticStorageKeys(stored || {});
+		const plan = core.planDiagnosticRetention(stored || {}, 0);
+		const keys = plan.keepKeys.concat(plan.removeKeys);
 		chrome.storage.local.remove(keys, function() {
 			if (status) status.textContent = "この診断版のローカルログを消去しました。";
 		});

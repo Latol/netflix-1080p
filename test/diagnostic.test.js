@@ -231,6 +231,65 @@ test("manual override is classified separately from the hidden extension menu", 
     assert.equal(events[1].phase, "before-override-click");
 });
 
+function playercoreStatsFixture() {
+    const audioBitrate = 192000;
+    const videoBitrate = 5800000;
+    const width = 1920;
+    const height = 1080;
+    const playing = audioBitrate + " / " + videoBitrate + " (" + width + "x" + height + ")";
+    return [
+        "Player state: playing",
+        "Playing bitrate (a/v): " + playing,
+        "Playing/Buffering vmaf: 94/90",
+        "Buffering bitrate (a/v): 64000 / 300000",
+        "Video Track: Codec: main (avchigh, hdr)",
+        "Audio Track: name, Id: a1, Channels: 2, Codec: aac (he-aac)",
+        "Throughput: 8123.5 kbps",
+        "Current CDN (a/v/t): edge, Id: 1 / edge, Id: 2 / edge, Id: 3",
+    ].join("\n");
+}
+
+test("playercore stats keep playing bitrate apart from throughput", () => {
+    const overlay = playercoreStatsFixture();
+    const fromValue = core.probeStatsText(core.readStatsNodeText({
+        tagName: "TEXTAREA",
+        value: overlay,
+        textContent: "",
+    }));
+    assert.equal(fromValue.playingAudioBitrate, 192000);
+    assert.equal(fromValue.playingVideoBitrate, 5800000);
+    assert.equal(fromValue.width, 1920);
+    assert.equal(fromValue.height, 1080);
+    assert.equal(fromValue.codec, "avchigh");
+    assert.equal(fromValue.throughputKbps, 8123.5);
+    assert.equal(fromValue.source, "player-info");
+    assert.equal("bitrateKbps" in fromValue, false);
+    assert.notEqual(fromValue.playingVideoBitrate, fromValue.throughputKbps);
+    assert.equal(fromValue.playingVideoBitrate === 300000, false);
+
+    const missing = core.probeStatsText("Playing bitrate (a/v): ? / 540000 (960x540)\nVideo Track: Codec: main (av1, prk)\n");
+    assert.equal(missing.playingAudioBitrate, null);
+    assert.equal(missing.playingVideoBitrate, 540000);
+    assert.equal(missing.width, 960);
+    assert.equal(missing.height, 540);
+    assert.equal(missing.codec, "av1");
+    assert.equal(missing.throughputKbps, null);
+
+    const throughputOnly = core.probeStatsText("Throughput: 999 kbps\n1920x1080 5800 kbps avc\n");
+    assert.equal(throughputOnly.throughputKbps, 999);
+    assert.equal(throughputOnly.playingAudioBitrate, null);
+    assert.equal(throughputOnly.playingVideoBitrate, null);
+    assert.equal(throughputOnly.codec, null);
+    assert.equal(throughputOnly.width, null);
+
+    const emptyValue = core.probeStatsText(core.readStatsNodeText({
+        tagName: "TEXTAREA",
+        value: "",
+        textContent: overlay,
+    }));
+    assert.equal(emptyValue.source, "none");
+});
+
 test("rendered resolution stays separate from the selected stream and player trace", () => {
     const selected = core.snapshotOptions([
         { value: "450000", text: "450000 / 40", selected: true },
@@ -239,7 +298,7 @@ test("rendered resolution stays separate from the selected stream and player tra
         wasDiscarded: true,
         index: 4,
         rendered: { width: 1920, height: 1080, bitrate: 450000 },
-        renderedProbe: core.probeStatsText("1920x1080 5800 kbps avc"),
+        renderedProbe: core.probeStatsText(playercoreStatsFixture()),
         selectedStream: { video: selected, actor: "extension-hidden" },
         playerTrace: { videoBitrateKbps: 450, audioBitrateKbps: 192, codec: "avc", at: 20 },
         dom: { menuPresent: false, videoCount: 1 },
@@ -248,11 +307,16 @@ test("rendered resolution stays separate from the selected stream and player tra
     assert.equal(sample.rendered.width, 1920);
     assert.equal(sample.rendered.height, 1080);
     assert.equal("bitrate" in sample.rendered, false);
-    assert.equal(sample.renderedProbe.bitrateKbps, 5800);
-    assert.equal(sample.renderedProbe.codec, "avc");
+    assert.equal("bitrateKbps" in sample.renderedProbe, false);
+    assert.equal(sample.renderedProbe.playingVideoBitrate, 5800000);
+    assert.equal(sample.renderedProbe.playingAudioBitrate, 192000);
+    assert.equal(sample.renderedProbe.throughputKbps, 8123.5);
+    assert.equal(sample.renderedProbe.codec, "avchigh");
+    assert.equal(sample.renderedProbe.source, "player-info");
     assert.equal(sample.selectedStream.video.order[0].value, "450000");
     assert.equal(sample.playerTrace.videoBitrateKbps, 450);
-    assert.notEqual(sample.playerTrace.videoBitrateKbps, sample.renderedProbe.bitrateKbps);
+    assert.notEqual(sample.playerTrace.videoBitrateKbps, sample.renderedProbe.playingVideoBitrate);
+    assert.notEqual(sample.renderedProbe.throughputKbps, sample.renderedProbe.playingVideoBitrate);
 });
 
 test("export strips watch ids, urls, tokens, and refuses to mark a fix applied", () => {
@@ -285,7 +349,8 @@ test("export strips watch ids, urls, tokens, and refuses to mark a fix applied",
     assert.equal(exported.storageReadFromOriginalExtension, false);
     assert.equal(exported.diagnostic, true);
     assert.equal(exported.userReportedOptionsScreen.storageRead, false);
-    assert.equal(exported.events[0].message.includes("[url]"), true);
+    assert.equal(exported.events[0].code, "unclassified");
+    assert.equal("message" in exported.events[0], false);
     assert.equal(exported.events[1].isWatch, true);
     assert.equal(exported.events[1].entered, true);
     assert.equal(exported.events[2].wasDiscarded, true);
@@ -337,6 +402,8 @@ test("profile and settings initialization can be ordered without keeping urls", 
     assert.equal(exported.events[4].invalid, true);
     assert.equal(exported.events[4].profiles, null);
     assert.equal(exported.events[5].type, "settings-error");
+    assert.equal(exported.events[5].code, "settings-load-failed");
+    assert.equal("message" in exported.events[5], false);
     const text = JSON.stringify(exported);
     assert.equal(text.includes("81234567"), false);
     assert.equal(text.includes("secret"), false);
@@ -381,6 +448,19 @@ test("extension sources keep original bitrate selection and add no reload", () =
     assert.doesNotMatch(hook, /storage\.sync\.set/);
     assert.doesNotMatch(hook, /document\.cookie/);
     assert.doesNotMatch(hook, /appendChild\s*=/);
+    assert.match(hook, /\.player-info textarea/);
+    assert.match(hook, /readStatsNodeText/);
+    assert.doesNotMatch(hook, /kbps\/i\.test\(text\)/);
+    assert.doesNotMatch(hook, /emitError\(event/);
+    assert.doesNotMatch(hook, /emitError\(error/);
+    assert.doesNotMatch(hook, /emitError\(reason/);
+    assert.match(hook, /selectTrackedMeasurement/);
+    assert.match(hook, /clearsAttribution/);
+    assert.match(bridge, /finishWrite/);
+    assert.doesNotMatch(bridge, /splice\(0,\s*buffer\.length\)/);
+    const options = read("pages/options.js");
+    assert.match(options, /mergeDiagnosticStorage/);
+    assert.doesNotMatch(options, /\.sort\(/);
     assert.doesNotMatch(bridge, /storage\.sync\.set/);
     assert.match(bridge, /storage\.local/);
     assert.equal(manifest.version, "1.34.0");
@@ -403,4 +483,117 @@ test("options page still defaults codec disables to off", () => {
     assert.match(options, /setMaxBitrate:\s*true/);
     assert.match(options, /use6Channels:\s*true/);
     assert.doesNotMatch(options, /USER_REPORTED_OPTIONS_SCREEN\.values/);
+});
+
+test("page errors keep a fixed code and drop names, emails, and title ids", () => {
+    const stored = core.sanitizeEvent(core.describeError("page-error"));
+    const leaked = core.sanitizeEvent({
+        type: "error",
+        code: "page-rejection",
+        message: "Ada Lovelace 81234567 viewer@example.com",
+    });
+    const unknown = core.sanitizeEvent({
+        type: "error",
+        message: "The Crown 81234567 ada@example.com",
+    });
+    assert.equal(stored.code, "page-error");
+    assert.equal("message" in stored, false);
+    assert.equal(leaked.code, "page-rejection");
+    assert.equal(unknown.code, "unclassified");
+    const text = JSON.stringify([stored, leaked, unknown]);
+    assert.equal(text.includes("81234567"), false);
+    assert.equal(text.includes("example.com"), false);
+    assert.equal(text.includes("Ada"), false);
+    assert.equal(text.includes("Crown"), false);
+});
+
+test("tracked video serial is measured instead of the largest leftover element", () => {
+    const entries = [
+        { serial: 1, width: 1920, height: 1080, droppedVideoFrames: 1, totalVideoFrames: 100, corruptedVideoFrames: 0 },
+        { serial: 2, width: 960, height: 540, droppedVideoFrames: 7, totalVideoFrames: 20, corruptedVideoFrames: 3 },
+    ];
+    const measured = core.selectTrackedMeasurement(entries, 2);
+    assert.equal(measured.matched, true);
+    assert.equal(measured.videoSerial, 2);
+    assert.equal(measured.width, 960);
+    assert.equal(measured.height, 540);
+    assert.equal(measured.playback.droppedVideoFrames, 7);
+    assert.equal(measured.playback.totalVideoFrames, 20);
+    assert.notEqual(measured.width, 1920);
+    const missing = core.selectTrackedMeasurement(entries, 9);
+    assert.equal(missing.matched, false);
+    assert.equal(missing.width, null);
+    assert.equal(missing.playback, null);
+});
+
+test("player replacement and title change drop the previous override attribution", () => {
+    assert.equal(core.clearsAttribution("video-replaced"), true);
+    assert.equal(core.clearsAttribution("title-switch"), true);
+    assert.equal(core.clearsAttribution("leave-watch"), true);
+    assert.equal(core.clearsAttribution("enter-watch"), true);
+    assert.equal(core.clearsAttribution("video-added"), false);
+    const selected = { playerGeneration: 1, video: { order: [{ value: "1", caption: "1", selected: true }] }, actor: "extension-hidden" };
+    const trace = { playerGeneration: 1, type: "playback-trace", videoBitrateKbps: 100 };
+    const stale = core.attributionForSample(selected, trace, 2);
+    assert.equal(stale.selectedStream, null);
+    assert.equal(stale.playerTrace, null);
+    const current = core.attributionForSample(selected, trace, 1);
+    assert.equal(current.selectedStream, selected);
+    assert.equal(current.playerTrace, trace);
+});
+
+test("failed storage writes keep buffered logs and export keeps the newer session", () => {
+    const queue = core.createPersistController({
+        startedAt: 2000,
+        sessionId: "0123456789abcdef",
+    });
+    queue.enqueue([{ type: "sampler", phase: "start", at: 1 }]);
+    queue.enqueue([{ type: "document", wasDiscarded: true, at: 2 }]);
+    const first = queue.beginWrite();
+    assert.equal(first.events.length, 2);
+    assert.equal(first.chunk, 1);
+    const failed = queue.finishWrite(false);
+    assert.equal(failed.failed, true);
+    assert.equal(failed.code, "storage-write-failed");
+    assert.equal(failed.pending, 2);
+    assert.equal(failed.chunk, 0);
+    queue.enqueue([{ type: "sampler", phase: "complete", at: 3 }]);
+    const second = queue.beginWrite();
+    assert.equal(second.events.length, 3);
+    const saved = queue.finishWrite(true);
+    assert.equal(saved.failed, false);
+    assert.equal(saved.pending, 0);
+    assert.equal(saved.chunk, 1);
+
+    const olderKey = "nflx1080pDiagnosticLog.ffffffffffffffff.0001";
+    const newerKey = "nflx1080pDiagnosticLog.aaaaaaaaaaaaaaaa.0001";
+    const stored = {};
+    stored[newerKey] = { events: [{ type: "sampler", phase: "start", at: 5000, message: "ada@example.com 81234567" }] };
+    stored[olderKey] = {
+        events: [
+            { type: "sampler", phase: "start", at: 1000 },
+            { type: "sampler", phase: "complete", at: 1001 },
+        ],
+    };
+    const lexical = Object.keys(stored).sort();
+    assert.equal(lexical[0], newerKey);
+    const exported = core.mergeDiagnosticStorage(stored, {}, { maxEvents: 1 });
+    assert.equal(exported.events.length, 1);
+    assert.equal(exported.events[0].at, 5000);
+    assert.equal(exported.retention.droppedOldest, 2);
+    assert.equal(exported.retention.order, "startedAt-or-event-time,sessionId,chunk");
+    assert.equal(JSON.stringify(exported).includes("81234567"), false);
+    assert.equal(JSON.stringify(exported).includes("example.com"), false);
+
+    const early = core.diagnosticChunkKey(1000, "aaaaaaaaaaaaaaaa", 2);
+    const late = core.diagnosticChunkKey(1000, "aaaaaaaaaaaaaaaa", 10);
+    const timed = {};
+    timed[late] = { events: [{ type: "sampler", phase: "complete", at: 1100 }] };
+    timed[early] = { events: [{ type: "sampler", phase: "start", at: 1000 }] };
+    const ordered = core.mergeDiagnosticStorage(timed, {}, { maxEvents: 2 });
+    assert.equal(ordered.events[0].phase, "start");
+    assert.equal(ordered.events[1].phase, "complete");
+    const plan = core.planDiagnosticRetention(timed, 1);
+    assert.deepEqual(plan.removeKeys, [early]);
+    assert.deepEqual(plan.keepKeys, [late]);
 });

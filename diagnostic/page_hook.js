@@ -66,10 +66,15 @@
         node.textContent = JSON.stringify(list);
     }
 
-    function emitError(message) {
+    function emitError(code) {
         if (errorCount >= 20) return;
         errorCount += 1;
-        emit(Core.describeError(message));
+        emit(Core.describeError(code));
+    }
+
+    function clearAttribution() {
+        lastSelected = null;
+        lastTrace = null;
     }
 
     function hideStylePresent() {
@@ -111,6 +116,7 @@
         if (!lastSelected) lastSelected = { video: null, audio: null, actor: event.actor };
         if (event.label === "video" || event.label === "audio") lastSelected[event.label] = event.snapshot;
         lastSelected.actor = event.actor;
+        lastSelected.playerGeneration = playerGeneration;
     }
 
     function menuSignature(snapshot) {
@@ -157,50 +163,48 @@
     function findPlaybackStatsText(doc) {
         let nodes;
         try {
-            nodes = doc.querySelectorAll('[class*="stats" i], [data-uia*="stats" i]');
+            nodes = doc.querySelectorAll(".player-info textarea");
         } catch (error) {
             return "";
         }
-        const limit = Math.min(nodes.length, 20);
-        for (let i = 0; i < limit; i++) {
-            const text = nodes[i].textContent || "";
-            if (text.length > 300 || text.length === 0) continue;
-            if (!/kbps/i.test(text)) continue;
-            if (/https?:\/\//i.test(text) || /\/watch\/\d+/.test(text)) continue;
-            return text;
+        for (let i = 0; i < nodes.length; i++) {
+            const text = Core.readStatsNodeText(nodes[i]);
+            if (text.indexOf("Playing bitrate (a/v):") !== -1 || text.indexOf("Video Track:") !== -1 || text.indexOf("Throughput:") !== -1) {
+                return text;
+            }
         }
         return "";
     }
 
     function renderedFromVideos() {
         const videos = document.getElementsByTagName("video");
-        let width = null;
-        let height = null;
-        let playback = null;
+        const entries = [];
         for (let i = 0; i < videos.length; i++) {
             const video = videos[i];
-            if ((video.videoWidth || 0) > (width || 0)) {
-                width = video.videoWidth || null;
-                height = video.videoHeight || null;
+            const serial = videoSerials.get(video);
+            if (!serial) continue;
+            let quality = null;
+            try {
+                if (typeof video.getVideoPlaybackQuality === "function") quality = video.getVideoPlaybackQuality();
+            } catch (error) {
+                quality = null;
             }
-            if (i === 0 && typeof video.getVideoPlaybackQuality === "function") {
-                try {
-                    const quality = video.getVideoPlaybackQuality();
-                    playback = {
-                        droppedVideoFrames: quality.droppedVideoFrames,
-                        totalVideoFrames: quality.totalVideoFrames,
-                        corruptedVideoFrames: quality.corruptedVideoFrames,
-                    };
-                } catch (error) {
-                    playback = null;
-                }
-            }
+            entries.push({
+                serial: serial,
+                width: video.videoWidth,
+                height: video.videoHeight,
+                droppedVideoFrames: quality && quality.droppedVideoFrames,
+                totalVideoFrames: quality && quality.totalVideoFrames,
+                corruptedVideoFrames: quality && quality.corruptedVideoFrames,
+            });
         }
+        const measured = Core.selectTrackedMeasurement(entries, playerTracker.currentKey());
         return {
-            width: width,
-            height: height,
-            playback: playback,
+            width: measured.width,
+            height: measured.height,
+            playback: measured.playback,
             videoCount: videos.length,
+            videoSerial: measured.videoSerial,
         };
     }
 
@@ -212,13 +216,14 @@
         clear: function (id) { clearTimeout(id); },
         onSample: function (info) {
             const rendered = renderedFromVideos();
+            const attribution = Core.attributionForSample(lastSelected, lastTrace, playerGeneration);
             emit(Core.buildSample({
                 wasDiscarded: wasDiscarded,
                 index: info.index,
                 rendered: { width: rendered.width, height: rendered.height },
                 renderedProbe: Core.probeStatsText(findPlaybackStatsText(document)),
-                selectedStream: lastSelected,
-                playerTrace: lastTrace,
+                selectedStream: attribution.selectedStream,
+                playerTrace: attribution.playerTrace,
                 playback: rendered.playback,
                 dom: {
                     hideStylePresent: hideStylePresent(),
@@ -226,6 +231,7 @@
                     videoCount: rendered.videoCount,
                 },
                 playerGeneration: playerGeneration,
+                videoSerial: rendered.videoSerial,
             }));
         },
         onComplete: function (info) {
@@ -268,6 +274,7 @@
     function onHref(href) {
         const result = locations.update(href);
         if (result.kind === "unchanged") return;
+        if (Core.clearsAttribution(result.kind)) clearAttribution();
         emit(result.publicEvent);
         applySampler(Core.decideSamplerAction({ running: sampler.isActive() }, result.kind));
     }
@@ -290,6 +297,7 @@
         const eventType = previous == null ? "video-added" : "video-replaced";
         const playerEvent = playerTracker.note(serial, Date.now());
         if (!playerEvent) return;
+        if (Core.clearsAttribution(eventType)) clearAttribution();
         playerGeneration = playerEvent.playerGeneration;
         const src = video.currentSrc || video.src || "";
         emit(Object.assign({ srcKind: Core.srcKind(src) }, playerEvent));
@@ -351,7 +359,7 @@
                 hadValue = true;
             }
         } catch (error) {
-            emitError(error && error.message);
+            emitError("global-options-hook");
         }
         try {
             Object.defineProperty(window, "globalOptions", {
@@ -363,12 +371,12 @@
                     try {
                         emit(Core.describeGlobalOptionsAssignment(value));
                     } catch (error) {
-                        emitError(error && error.message);
+                        emitError("global-options-hook");
                     }
                 },
             });
         } catch (error) {
-            emitError("globalOptions hook failed");
+            emitError("global-options-hook");
             return;
         }
         if (hadValue) window.globalOptions = current;
@@ -382,10 +390,12 @@
                 const classified = Core.classifyConsole(Array.prototype.slice.call(arguments));
                 if (classified) {
                     const clean = emit(classified);
-                    if (clean && clean.type === "playback-trace") lastTrace = clean;
+                    if (clean && clean.type === "playback-trace") {
+                        lastTrace = Object.assign({ playerGeneration: playerGeneration }, clean);
+                    }
                 }
             } catch (error) {
-                emitError(error && error.message);
+                emitError("console-hook");
             }
             return original.apply(console, arguments);
         };
@@ -402,12 +412,11 @@
     window.addEventListener("hashchange", function () {
         onHref(String(location.href));
     });
-    window.addEventListener("error", function (event) {
-        emitError(event && event.message);
+    window.addEventListener("error", function () {
+        emitError("page-error");
     });
-    window.addEventListener("unhandledrejection", function (event) {
-        const reason = event && event.reason;
-        emitError(reason && reason.message ? reason.message : reason);
+    window.addEventListener("unhandledrejection", function () {
+        emitError("page-rejection");
     });
     document.addEventListener("click", function (event) {
         const target = event.target && event.target.closest ? event.target.closest("button") : event.target;
@@ -423,7 +432,7 @@
         try {
             recordOverride(root, actor);
         } catch (error) {
-            emitError(error && error.message);
+            emitError("override-hook");
         }
         setTimeout(function () {
             suppressMenuObserver = false;
@@ -449,7 +458,7 @@
         try {
             onHref(String(location.href));
         } catch (error) {
-            emitError(error && error.message);
+            emitError("location-hook");
         }
     }, 500);
     window.addEventListener("pagehide", function () {

@@ -46,7 +46,7 @@ Web Store 版へ戻すときは、診断版を削除または無効にし、Web 
 
 ## 実機で残すもの
 
-ログは `chrome.storage.local` にだけ入ります。書き出しはオプション画面の「診断ログを書き出す」です。ファイル名は `netflix-1080p-diagnostic.json` です。
+ログは `chrome.storage.local` にだけ入ります。ページの例外文は保存せず、決まったコードだけを残します。保存は時刻とチャンク順で、チャンクは最大 40、書き出しは古い記録から最大 4000 件に切ります。書き込みに失敗した分はバッファに残し、確認できるまで消しません。書き出しはオプション画面の「診断ログを書き出す」です。ファイル名は `netflix-1080p-diagnostic.json` です。
 
 各 watch 進入または video 要素の出現から、1秒間隔で最大180回（3分）取ります。タイトルが変わると窓をやり直します。watch を離れると止めます。
 
@@ -58,7 +58,7 @@ Web Store 版へ戻すときは、診断版を削除または無効にし、Web 
 - `#maxbitrate-hide-menu-style` の有無（元の自動操作がメニューを隠している印）
 - 設定 DOM と `globalOptions` へ入った6項目、報告画面との一致、profile 名、設定読み込みエラー
 - サンプルの `rendered`（videoWidth / videoHeight）
-- `renderedProbe`（短い stats 文言から取れた bitrate / codec。無ければ null）
+- `renderedProbe` は `.player-info` の textarea だけを読む。`Playing bitrate (a/v)` の音声・映像 bitrate と解像度、`Video Track` の codec、`Throughput` の kbps は別フィールドです。Throughput は再生 bitrate に入れません。パネルが開いていなければ null です。
 - `selectedStream`（Override 直前に選ばれていた option）
 - `playerTrace`（player のコンソールに出た bitrate。描画解像度ではない）
 

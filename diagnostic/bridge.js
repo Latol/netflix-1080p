@@ -5,10 +5,7 @@
     if (!Core || globalThis.__nflx1080pDiagBridge) return;
     globalThis.__nflx1080pDiagBridge = true;
 
-    const STORAGE_KEY = "nflx1080pDiagnosticLog";
-    let buffer = [];
     let timer = null;
-    let chunk = 0;
     const seen = new Set();
     const sessionId = newSessionId();
 
@@ -21,6 +18,7 @@
     }
 
     const frame = frameKind();
+    const sessionStartedAt = Date.now();
 
     function newSessionId() {
         const bytes = new Uint8Array(8);
@@ -32,20 +30,42 @@
         return id;
     }
 
+    const queue = Core.createPersistController({
+        startedAt: sessionStartedAt,
+        sessionId: sessionId,
+    });
+
     function persist() {
         timer = null;
-        if (!buffer.length) return;
-        const batch = buffer.splice(0, buffer.length);
-        chunk += 1;
+        const request = queue.beginWrite();
+        if (!request) return;
+        if (!request.key) {
+            queue.finishWrite(false);
+            timer = setTimeout(persist, 1000);
+            return;
+        }
         const payload = {};
-        payload[STORAGE_KEY + "." + sessionId + "." + String(chunk).padStart(4, "0")] = Core.mergeExport(null, batch, {
+        payload[request.key] = Core.mergeExport(null, request.events, {
             extensionId: chrome.runtime.id,
         });
-        chrome.storage.local.set(payload);
+        chrome.storage.local.set(payload, function () {
+            const ok = !chrome.runtime.lastError;
+            const result = queue.finishWrite(ok);
+            if (!ok) {
+                timer = setTimeout(persist, 1000);
+                return;
+            }
+            chrome.storage.local.get(null, function (stored) {
+                if (chrome.runtime.lastError) return;
+                const plan = Core.planDiagnosticRetention(stored, Core.MAX_STORED_CHUNKS);
+                if (plan.removeKeys.length) chrome.storage.local.remove(plan.removeKeys);
+            });
+            if (result.pending) persist();
+        });
     }
 
     function schedule() {
-        if (buffer.length >= 200) {
+        if (queue.pending() >= 200) {
             if (timer != null) {
                 clearTimeout(timer);
                 timer = null;
@@ -64,7 +84,7 @@
         const key = String(clean.frame) + ":" + String(clean.seq);
         if (seen.has(key)) return;
         seen.add(key);
-        buffer.push(clean);
+        queue.enqueue([clean]);
         schedule();
     }
 

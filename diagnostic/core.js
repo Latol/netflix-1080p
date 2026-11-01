@@ -163,29 +163,69 @@
         return typeof value === "string" && /^[a-p]{32}$/.test(value) ? value : null;
     }
 
+    const VIDEO_CODECS = ["avc", "avchigh", "hevc", "av1"];
+    const ERROR_CODES = ["page-error", "page-rejection", "global-options-hook", "console-hook", "override-hook", "location-hook", "settings-load-failed", "storage-write-failed", "unclassified"];
+    const STORAGE_PREFIX = "nflx1080pDiagnosticLog";
+    const MAX_STORED_CHUNKS = 40;
+
     function emptyProbe() {
         return {
             width: null,
             height: null,
-            bitrateKbps: null,
+            playingAudioBitrate: null,
+            playingVideoBitrate: null,
+            throughputKbps: null,
             codec: null,
             source: "none",
         };
     }
 
+    function parseBitrateToken(token) {
+        if (typeof token !== "string") return null;
+        const text = token.trim();
+        if (!/^\d+(?:\.\d+)?$/.test(text)) return null;
+        return finiteOrNull(Number(text));
+    }
+
+    function readStatsNodeText(node) {
+        if (!node || typeof node !== "object") return "";
+        if (node.tagName === "TEXTAREA" && typeof node.value === "string") return node.value;
+        return typeof node.textContent === "string" ? node.textContent : "";
+    }
+
     function probeStatsText(text) {
-        if (typeof text !== "string" || text.length === 0 || text.length > 300) return emptyProbe();
-        if (/https?:\/\//i.test(text) || /\/watch\/\d+/.test(text)) return emptyProbe();
-        if (!/kbps/i.test(text)) return emptyProbe();
-        const resolution = text.match(/(\d{2,4})\s*[x×]\s*(\d{2,4})/);
-        const bitrate = text.match(/(\d+(?:\.\d+)?)\s*kbps/i);
-        return {
-            width: resolution ? clampDim(Number(resolution[1])) : null,
-            height: resolution ? clampDim(Number(resolution[2])) : null,
-            bitrateKbps: bitrate ? finiteOrNull(Number(bitrate[1])) : null,
-            codec: findCodec(text),
-            source: "stats-text",
-        };
+        const probe = emptyProbe();
+        if (typeof text !== "string" || text.length === 0) return probe;
+        const lines = text.slice(0, 100000).split(/\r?\n/);
+        const limit = Math.min(lines.length, 400);
+        for (let i = 0; i < limit; i++) {
+            const line = lines[i];
+            if (line.length === 0 || line.length > 500) continue;
+            if (/https?:\/\//i.test(line) || /\/watch\/\d+/.test(line)) continue;
+            const playing = line.match(/^Playing bitrate \(a\/v\):\s*([^/\n]+?)\s*\/\s*(\S+)(?:\s*\((\d{2,4})\s*[x×]\s*(\d{2,4})\))?\s*$/);
+            if (playing) {
+                probe.playingAudioBitrate = parseBitrateToken(playing[1]);
+                probe.playingVideoBitrate = parseBitrateToken(playing[2]);
+                if (playing[3] && playing[4]) {
+                    probe.width = clampDim(Number(playing[3]));
+                    probe.height = clampDim(Number(playing[4]));
+                }
+                continue;
+            }
+            const throughput = line.match(/^Throughput:\s*(\d+(?:\.\d+)?)\s*kbps\s*$/i);
+            if (throughput) {
+                probe.throughputKbps = finiteOrNull(Number(throughput[1]));
+                continue;
+            }
+            const videoTrack = line.match(/^Video Track:\s*Codec:\s*.+\(([^)]+)\)\s*$/);
+            if (videoTrack) {
+                const primary = videoTrack[1].split(",")[0].trim().toLowerCase();
+                probe.codec = VIDEO_CODECS.indexOf(primary) === -1 ? null : primary;
+            }
+        }
+        const found = probe.playingAudioBitrate != null || probe.playingVideoBitrate != null || probe.throughputKbps != null || probe.codec != null || probe.width != null;
+        probe.source = found ? "player-info" : "none";
+        return probe;
     }
 
     function snapshotOptions(options) {
@@ -297,10 +337,56 @@
         };
     }
 
-    function describeError(message) {
+    function describeError(code) {
         return {
             type: "error",
-            message: redactText(message == null ? "" : String(message), 180),
+            code: ERROR_CODES.indexOf(code) === -1 ? "unclassified" : code,
+        };
+    }
+
+    function clearsAttribution(eventType) {
+        return eventType === "video-replaced" || eventType === "title-switch" || eventType === "leave-watch" || eventType === "enter-watch";
+    }
+
+    function attributionForSample(selected, trace, playerGeneration) {
+        const generation = integerOrNull(playerGeneration);
+        function accept(value) {
+            if (!value || typeof value !== "object") return null;
+            if (integerOrNull(value.playerGeneration) !== generation) return null;
+            return value;
+        }
+        return {
+            selectedStream: accept(selected),
+            playerTrace: accept(trace),
+        };
+    }
+
+    function selectTrackedMeasurement(entries, trackedSerial) {
+        const serial = integerOrNull(trackedSerial);
+        const list = Array.isArray(entries) ? entries : [];
+        let match = null;
+        for (let i = 0; i < list.length; i++) {
+            if (integerOrNull(list[i] && list[i].serial) === serial) match = list[i];
+        }
+        if (!match) {
+            return {
+                videoSerial: serial,
+                width: null,
+                height: null,
+                playback: null,
+                matched: false,
+            };
+        }
+        return {
+            videoSerial: serial,
+            width: clampDim(match.width),
+            height: clampDim(match.height),
+            playback: {
+                droppedVideoFrames: finiteOrNull(match.droppedVideoFrames),
+                totalVideoFrames: finiteOrNull(match.totalVideoFrames),
+                corruptedVideoFrames: finiteOrNull(match.corruptedVideoFrames),
+            },
+            matched: true,
         };
     }
 
@@ -363,9 +449,7 @@
         if (first.indexOf("Netflix profiles:") === 0) return classifyProfiles("Netflix profiles:", args[1]);
         if (first.indexOf("Final profiles:") === 0) return classifyProfiles("Final profiles:", args[1]);
         if (first.indexOf("Could not load settings:") === 0) {
-            const err = args[1];
-            const message = err && typeof err === "object" && err.message ? err.message : (err == null ? "" : String(err));
-            return { type: "settings-error", message: redactText(message, 180) };
+            return { type: "settings-error", code: "settings-load-failed" };
         }
         if (first.indexOf("Loaded settings") === 0) return describeGlobalOptionsAssignment(args[1]);
         for (let i = 0; i < PLAYER_LOG_MARKERS.length; i++) {
@@ -393,9 +477,11 @@
             renderedProbe: {
                 width: clampDim(probe.width),
                 height: clampDim(probe.height),
-                bitrateKbps: finiteOrNull(probe.bitrateKbps),
-                codec: codecOrNull(probe.codec),
-                source: probe.source === "stats-text" ? "stats-text" : "none",
+                playingAudioBitrate: finiteOrNull(probe.playingAudioBitrate),
+                playingVideoBitrate: finiteOrNull(probe.playingVideoBitrate),
+                throughputKbps: finiteOrNull(probe.throughputKbps),
+                codec: enumString(probe.codec, VIDEO_CODECS),
+                source: probe.source === "player-info" ? "player-info" : "none",
             },
             selectedStream: data.selectedStream || null,
             playerTrace: data.playerTrace || null,
@@ -410,6 +496,7 @@
                 videoCount: integerOrNull(dom.videoCount) || 0,
             },
             playerGeneration: integerOrNull(data.playerGeneration),
+            videoSerial: integerOrNull(data.videoSerial),
         };
     }
 
@@ -483,9 +570,12 @@
                 });
             }
             case "settings-error":
+                return Object.assign(base, {
+                    code: event.code === "settings-load-failed" ? "settings-load-failed" : "unclassified",
+                });
             case "error":
                 return Object.assign(base, {
-                    message: redactText(typeof event.message === "string" ? event.message : "", 180),
+                    code: enumString(event.code, ERROR_CODES) || "unclassified",
                 });
             case "profile": {
                 let profiles = null;
@@ -602,6 +692,151 @@
 
     function emptyExport(meta) {
         return mergeExport(null, [], meta || {});
+    }
+
+    function parseDiagnosticStorageKey(key) {
+        if (typeof key !== "string") return null;
+        const current = key.match(/^nflx1080pDiagnosticLog\.(\d+)\.([0-9a-f]{16})\.(\d+)$/);
+        if (current) {
+            return {
+                key: key,
+                startedAt: Number(current[1]),
+                sessionId: current[2],
+                chunk: Number(current[3]),
+                legacy: false,
+            };
+        }
+        const legacy = key.match(/^nflx1080pDiagnosticLog\.([0-9a-f]{16})\.(\d+)$/);
+        if (legacy) {
+            return {
+                key: key,
+                startedAt: null,
+                sessionId: legacy[1],
+                chunk: Number(legacy[2]),
+                legacy: true,
+            };
+        }
+        if (key === STORAGE_PREFIX) {
+            return { key: key, startedAt: null, sessionId: "", chunk: 0, legacy: true };
+        }
+        return null;
+    }
+
+    function diagnosticChunkKey(startedAt, sessionId, chunk) {
+        const time = integerOrNull(startedAt);
+        const part = integerOrNull(chunk);
+        if (time == null || time < 0 || part == null || part < 1) return null;
+        if (typeof sessionId !== "string" || !/^[0-9a-f]{16}$/.test(sessionId)) return null;
+        return STORAGE_PREFIX + "." + String(time).padStart(16, "0") + "." + sessionId + "." + String(part).padStart(4, "0");
+    }
+
+    function chunkSortTime(record) {
+        if (record.startedAt != null) return record.startedAt;
+        const events = Array.isArray(record.events) ? record.events : [];
+        let earliest = null;
+        for (let i = 0; i < events.length; i++) {
+            const at = integerOrNull(events[i] && events[i].at);
+            if (at == null) continue;
+            if (earliest == null || at < earliest) earliest = at;
+        }
+        return earliest == null ? 0 : earliest;
+    }
+
+    function compareDiagnosticChunks(a, b) {
+        const aTime = chunkSortTime(a);
+        const bTime = chunkSortTime(b);
+        if (aTime !== bTime) return aTime - bTime;
+        if (a.sessionId < b.sessionId) return -1;
+        if (a.sessionId > b.sessionId) return 1;
+        return a.chunk - b.chunk;
+    }
+
+    function listDiagnosticChunks(stored) {
+        const records = [];
+        if (!stored || typeof stored !== "object") return records;
+        const keys = Object.keys(stored);
+        for (let i = 0; i < keys.length; i++) {
+            const parsed = parseDiagnosticStorageKey(keys[i]);
+            if (!parsed) continue;
+            const value = stored[keys[i]];
+            parsed.events = value && value.events;
+            records.push(parsed);
+        }
+        records.sort(compareDiagnosticChunks);
+        return records;
+    }
+
+    function planDiagnosticRetention(stored, maxChunks) {
+        const limit = integerOrNull(maxChunks);
+        const cap = limit == null ? MAX_STORED_CHUNKS : limit;
+        const records = listDiagnosticChunks(stored);
+        if (records.length <= cap) {
+            return {
+                keepKeys: records.map(function (record) { return record.key; }),
+                removeKeys: [],
+            };
+        }
+        return {
+            keepKeys: records.slice(records.length - cap).map(function (record) { return record.key; }),
+            removeKeys: records.slice(0, records.length - cap).map(function (record) { return record.key; }),
+        };
+    }
+
+    function mergeDiagnosticStorage(stored, meta, limits) {
+        const records = listDiagnosticChunks(stored);
+        const maxEvents = limits && integerOrNull(limits.maxEvents) != null ? limits.maxEvents : MAX_EVENTS;
+        const events = [];
+        for (let i = 0; i < records.length; i++) {
+            const batch = Array.isArray(records[i].events) ? records[i].events : [];
+            for (let j = 0; j < batch.length; j++) events.push(batch[j]);
+        }
+        const merged = mergeExport(null, events, meta || {});
+        while (merged.events.length > maxEvents) {
+            merged.events.shift();
+            merged.dropped += 1;
+        }
+        merged.retention = {
+            maxEvents: maxEvents,
+            maxChunks: MAX_STORED_CHUNKS,
+            chunkCount: records.length,
+            order: "startedAt-or-event-time,sessionId,chunk",
+            droppedOldest: merged.dropped,
+        };
+        return merged;
+    }
+
+    function createPersistController(options) {
+        const opts = options || {};
+        let buffer = [];
+        let writing = null;
+        let chunk = 0;
+        return {
+            enqueue: function (events) {
+                const list = Array.isArray(events) ? events : [];
+                for (let i = 0; i < list.length; i++) buffer.push(list[i]);
+            },
+            beginWrite: function () {
+                if (writing || !buffer.length) return null;
+                writing = buffer.slice();
+                return {
+                    chunk: chunk + 1,
+                    key: diagnosticChunkKey(opts.startedAt, opts.sessionId, chunk + 1),
+                    events: writing.slice(),
+                };
+            },
+            finishWrite: function (ok) {
+                if (!writing) return { pending: buffer.length, chunk: chunk, failed: false, code: null };
+                if (!ok) {
+                    writing = null;
+                    return { pending: buffer.length, chunk: chunk, failed: true, code: "storage-write-failed" };
+                }
+                buffer = buffer.slice(writing.length);
+                writing = null;
+                chunk += 1;
+                return { pending: buffer.length, chunk: chunk, failed: false, code: null };
+            },
+            pending: function () { return buffer.length; },
+        };
     }
 
     function createLocationTracker() {
@@ -822,6 +1057,8 @@
         SAMPLE_INTERVAL_MS: SAMPLE_INTERVAL_MS,
         SAMPLE_COUNT: SAMPLE_COUNT,
         MAX_EVENTS: MAX_EVENTS,
+        MAX_STORED_CHUNKS: MAX_STORED_CHUNKS,
+        ERROR_CODES: ERROR_CODES,
         STORE_EXTENSION_ID: STORE_EXTENSION_ID,
         DIAGNOSTIC_EXTENSION_ID: DIAGNOSTIC_EXTENSION_ID,
         SETTING_KEYS: SETTING_KEYS,
@@ -832,6 +1069,7 @@
         settingsMatchReport: settingsMatchReport,
         originalAutomaticLoopExpected: originalAutomaticLoopExpected,
         redactText: redactText,
+        readStatsNodeText: readStatsNodeText,
         probeStatsText: probeStatsText,
         snapshotOptions: snapshotOptions,
         originalLastOptionIndex: originalLastOptionIndex,
@@ -841,12 +1079,19 @@
         describeGlobalOptionsAssignment: describeGlobalOptionsAssignment,
         describeSettingsDom: describeSettingsDom,
         describeError: describeError,
+        clearsAttribution: clearsAttribution,
+        attributionForSample: attributionForSample,
+        selectTrackedMeasurement: selectTrackedMeasurement,
         documentFacts: documentFacts,
         classifyConsole: classifyConsole,
         buildSample: buildSample,
         sanitizeEvent: sanitizeEvent,
         mergeExport: mergeExport,
         emptyExport: emptyExport,
+        diagnosticChunkKey: diagnosticChunkKey,
+        planDiagnosticRetention: planDiagnosticRetention,
+        mergeDiagnosticStorage: mergeDiagnosticStorage,
+        createPersistController: createPersistController,
         createLocationTracker: createLocationTracker,
         decideSamplerAction: decideSamplerAction,
         createSampler: createSampler,
