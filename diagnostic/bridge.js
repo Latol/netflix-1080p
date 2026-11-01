@@ -74,7 +74,7 @@
             return;
         }
         if (timer != null) return;
-        timer = setTimeout(persist, 250);
+        timer = setTimeout(persist, Core.FLUSH_DELAY_MS);
     }
 
     function ingest(event) {

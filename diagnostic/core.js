@@ -166,7 +166,9 @@
     const VIDEO_CODECS = ["avc", "avchigh", "hevc", "av1"];
     const ERROR_CODES = ["page-error", "page-rejection", "global-options-hook", "console-hook", "override-hook", "location-hook", "settings-load-failed", "storage-write-failed", "unclassified"];
     const STORAGE_PREFIX = "nflx1080pDiagnosticLog";
-    const MAX_STORED_CHUNKS = 40;
+    const FLUSH_DELAY_MS = 250;
+    const CHUNK_EVENT_LIMIT = SAMPLE_COUNT + 70;
+    const MAX_STORED_CHUNKS = 16;
 
     function emptyProbe() {
         return {
@@ -807,9 +809,11 @@
 
     function createPersistController(options) {
         const opts = options || {};
+        const limit = integerOrNull(opts.chunkEventLimit) || CHUNK_EVENT_LIMIT;
         let buffer = [];
+        let open = [];
+        let openIndex = 1;
         let writing = null;
-        let chunk = 0;
         return {
             enqueue: function (events) {
                 const list = Array.isArray(events) ? events : [];
@@ -817,23 +821,36 @@
             },
             beginWrite: function () {
                 if (writing || !buffer.length) return null;
-                writing = buffer.slice();
+                if (open.length >= limit) {
+                    open = [];
+                    openIndex += 1;
+                }
+                const room = limit - open.length;
+                const take = buffer.slice(0, room);
+                writing = { take: take, index: openIndex, base: open.slice() };
                 return {
-                    chunk: chunk + 1,
-                    key: diagnosticChunkKey(opts.startedAt, opts.sessionId, chunk + 1),
-                    events: writing.slice(),
+                    chunk: openIndex,
+                    key: diagnosticChunkKey(opts.startedAt, opts.sessionId, openIndex),
+                    events: writing.base.concat(take),
                 };
             },
             finishWrite: function (ok) {
-                if (!writing) return { pending: buffer.length, chunk: chunk, failed: false, code: null };
+                if (!writing) {
+                    return { pending: buffer.length, chunk: open.length ? openIndex : 0, failed: false, code: null };
+                }
                 if (!ok) {
                     writing = null;
-                    return { pending: buffer.length, chunk: chunk, failed: true, code: "storage-write-failed" };
+                    return { pending: buffer.length, chunk: open.length ? openIndex : 0, failed: true, code: "storage-write-failed" };
                 }
-                buffer = buffer.slice(writing.length);
+                open = writing.base.concat(writing.take);
+                buffer = buffer.slice(writing.take.length);
+                const written = writing.index;
                 writing = null;
-                chunk += 1;
-                return { pending: buffer.length, chunk: chunk, failed: false, code: null };
+                if (open.length >= limit) {
+                    open = [];
+                    openIndex += 1;
+                }
+                return { pending: buffer.length, chunk: written, failed: false, code: null };
             },
             pending: function () { return buffer.length; },
         };
@@ -1058,6 +1075,8 @@
         SAMPLE_COUNT: SAMPLE_COUNT,
         MAX_EVENTS: MAX_EVENTS,
         MAX_STORED_CHUNKS: MAX_STORED_CHUNKS,
+        FLUSH_DELAY_MS: FLUSH_DELAY_MS,
+        CHUNK_EVENT_LIMIT: CHUNK_EVENT_LIMIT,
         ERROR_CODES: ERROR_CODES,
         STORE_EXTENSION_ID: STORE_EXTENSION_ID,
         DIAGNOSTIC_EXTENSION_ID: DIAGNOSTIC_EXTENSION_ID,

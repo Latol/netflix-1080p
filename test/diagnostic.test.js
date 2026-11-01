@@ -597,3 +597,108 @@ test("failed storage writes keep buffered logs and export keeps the newer sessio
     assert.deepEqual(plan.removeKeys, [early]);
     assert.deepEqual(plan.keepKeys, [late]);
 });
+
+test("two 3-minute captures survive the 250ms flush and chunk pruning", () => {
+    assert.equal(core.FLUSH_DELAY_MS, 250);
+    assert.equal(core.SAMPLE_COUNT, 180);
+    assert.ok(core.CHUNK_EVENT_LIMIT >= core.SAMPLE_COUNT + 5);
+    assert.ok(core.MAX_STORED_CHUNKS * core.CHUNK_EVENT_LIMIT >= 2 * (core.SAMPLE_COUNT + 5));
+    const bridge = read("diagnostic/bridge.js");
+    assert.match(bridge, /FLUSH_DELAY_MS/);
+
+    function createSession(startedAt, sessionId) {
+        const stored = {};
+        const queue = core.createPersistController({
+            startedAt: startedAt,
+            sessionId: sessionId,
+        });
+        let now = 0;
+        let due = null;
+        function flush() {
+            due = null;
+            const request = queue.beginWrite();
+            if (!request) return;
+            stored[request.key] = { events: request.events };
+            const result = queue.finishWrite(true);
+            const plan = core.planDiagnosticRetention(stored, core.MAX_STORED_CHUNKS);
+            for (let i = 0; i < plan.removeKeys.length; i++) delete stored[plan.removeKeys[i]];
+            if (result.pending) flush();
+        }
+        return {
+            stored: stored,
+            ingest: function (events) {
+                queue.enqueue(events);
+                if (queue.pending() >= 200) {
+                    due = null;
+                    flush();
+                    return;
+                }
+                if (due == null) due = now + core.FLUSH_DELAY_MS;
+            },
+            advance: function (ms) {
+                const target = now + ms;
+                while (due != null && due <= target) {
+                    now = due;
+                    flush();
+                }
+                now = target;
+            },
+        };
+    }
+
+    function metadata(at, wasDiscarded, seq) {
+        return [
+            { type: "document", at: at, seq: seq, wasDiscarded: wasDiscarded, readyState: "complete", navigationType: "reload" },
+            { type: "settings-dom", at: at + 1, seq: seq + 1, applied: true, parseError: false, settings: {
+                use6Channels: true, setMaxBitrate: true, disableVP9: true, disableAVChigh: true, disableAV1: true, showAllSubs: true,
+            } },
+            { type: "profile", at: at + 2, seq: seq + 2, marker: "final", invalid: false, profiles: ["playready-h264mpl40-dash"] },
+            { type: "menu", at: at + 3, seq: seq + 3, phase: "before-override-click", actor: "extension-hidden", label: "video", menuPresent: true, snapshot: {
+                order: [{ value: "5800000", caption: "5800000 / 94", selected: true }],
+            } },
+            { type: "error", at: at + 4, seq: seq + 4, code: "page-error" },
+        ];
+    }
+
+    function runCapture(session, at, wasDiscarded) {
+        session.ingest(metadata(at, wasDiscarded, 1));
+        session.advance(core.FLUSH_DELAY_MS);
+        for (let i = 1; i <= core.SAMPLE_COUNT; i++) {
+            session.ingest([{
+                type: "sample",
+                at: at + i * 1000,
+                seq: 100 + i,
+                index: i,
+                wasDiscarded: wasDiscarded,
+                rendered: { width: wasDiscarded ? 960 : 1920, height: wasDiscarded ? 540 : 1080 },
+                playerGeneration: 1,
+                videoSerial: 1,
+            }]);
+            session.advance(core.FLUSH_DELAY_MS);
+            session.advance(1000 - core.FLUSH_DELAY_MS);
+        }
+    }
+
+    const normal = createSession(1_700_000_000_000, "aaaaaaaaaaaaaaaa");
+    const discard = createSession(1_700_000_300_000, "ffffffffffffffff");
+    runCapture(normal, 1_700_000_000_000, false);
+    runCapture(discard, 1_700_000_300_000, true);
+    const stored = Object.assign({}, normal.stored, discard.stored);
+    assert.ok(Object.keys(stored).length < core.MAX_STORED_CHUNKS);
+    assert.ok(Object.keys(normal.stored).length <= 2);
+    const exported = core.mergeDiagnosticStorage(stored, { extensionId: core.DIAGNOSTIC_EXTENSION_ID });
+    const samples = exported.events.filter(function (event) { return event.type === "sample"; });
+    const documents = exported.events.filter(function (event) { return event.type === "document"; });
+    assert.equal(samples.length, 360);
+    assert.equal(samples.filter(function (event) { return event.wasDiscarded === false && event.index === 1; }).length, 1);
+    assert.equal(samples.filter(function (event) { return event.wasDiscarded === true && event.index === 1; }).length, 1);
+    assert.equal(samples.filter(function (event) { return event.wasDiscarded === false && event.index === 180; }).length, 1);
+    assert.equal(samples.filter(function (event) { return event.wasDiscarded === true && event.index === 180; }).length, 1);
+    assert.equal(documents.length, 2);
+    assert.equal(documents.filter(function (event) { return event.wasDiscarded === true; }).length, 1);
+    assert.equal(exported.events.filter(function (event) { return event.type === "settings-dom" && event.applied === true; }).length, 2);
+    assert.equal(exported.events.filter(function (event) { return event.type === "profile" && event.marker === "final"; }).length, 2);
+    assert.equal(exported.events.filter(function (event) { return event.type === "menu" && event.phase === "before-override-click"; }).length, 2);
+    assert.equal(exported.events.filter(function (event) { return event.type === "error" && event.code === "page-error"; }).length, 2);
+    assert.equal(exported.retention.droppedOldest, 0);
+});

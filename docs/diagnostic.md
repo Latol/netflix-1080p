@@ -46,7 +46,7 @@ Web Store 版へ戻すときは、診断版を削除または無効にし、Web 
 
 ## 実機で残すもの
 
-ログは `chrome.storage.local` にだけ入ります。ページの例外文は保存せず、決まったコードだけを残します。保存は時刻とチャンク順で、チャンクは最大 40、書き出しは古い記録から最大 4000 件に切ります。書き込みに失敗した分はバッファに残し、確認できるまで消しません。書き出しはオプション画面の「診断ログを書き出す」です。ファイル名は `netflix-1080p-diagnostic.json` です。
+ログは `chrome.storage.local` にだけ入ります。ページの例外文は保存せず、決まったコードだけを残します。250ms ごとの保存は、同じチャンクをイベント上限まで書き換えてから次のチャンクへ進みます。チャンク数の上限内に、通常の再読み込みと休止復帰をそれぞれ 3 分取った記録が残ります。書き出しは古い記録から最大 4000 件に切ります。書き込みに失敗した分はバッファに残し、確認できるまで消しません。書き出しはオプション画面の「診断ログを書き出す」です。ファイル名は `netflix-1080p-diagnostic.json` です。
 
 各 watch 進入または video 要素の出現から、1秒間隔で最大180回（3分）取ります。タイトルが変わると窓をやり直します。watch を離れると止めます。
 
@@ -58,7 +58,7 @@ Web Store 版へ戻すときは、診断版を削除または無効にし、Web 
 - `#maxbitrate-hide-menu-style` の有無（元の自動操作がメニューを隠している印）
 - 設定 DOM と `globalOptions` へ入った6項目、報告画面との一致、profile 名、設定読み込みエラー
 - サンプルの `rendered`（videoWidth / videoHeight）
-- `renderedProbe` は `.player-info` の textarea だけを読む。`Playing bitrate (a/v)` の音声・映像 bitrate と解像度、`Video Track` の codec、`Throughput` の kbps は別フィールドです。Throughput は再生 bitrate に入れません。パネルが開いていなければ null です。
+- `renderedProbe` は `.player-info` の textarea だけを読む。`Playing bitrate (a/v)` の音声・映像 bitrate と解像度、`Video Track` の codec、`Throughput` の kbps は別フィールドです。Throughput は再生 bitrate に入れません。この textarea は、再生統計を手動で開いている間だけ存在します。開いていなければ bitrate と codec は null です。video 要素の描画解像度は、統計を開かなくても残ります。
 - `selectedStream`（Override 直前に選ばれていた option）
 - `playerTrace`（player のコンソールに出た bitrate。描画解像度ではない）
 
@@ -73,9 +73,10 @@ HAR、Cookie、token、完全な URL、署名付き URL、会話、作品を識�
 1. Web Store 版「New Netflix 1080p」を無効にする。
 2. 診断用のディレクトリを用意する。リポジトリ直下をそのまま読み込むか、`python3 make.py` でテストを含まない `dist/` を作ってそれを読み込む。名前は「New Netflix 1080p Diagnostic」、ID は `paaingnmhpdddlckkplellcbindblmkd` です。
 3. 診断版のオプションで6項目をすべてチェックして Save する。一致の表示を確認する。
-4. 1080p が通常出る作品で、通常の再読み込み後に3分再生し、ログを書き出す。
-5. 同じ作品で Auto Tab Discard により休止し、タブを選び直して3分見る。自動のページ再読み込みはしない。ログを書き出す。
-6. 通常再生、通常の再読み込み、タブ切替、次話移動も、比較用に残せるなら残す。
+4. 1080p が通常出る作品で通常の再読み込みをしたあと、再生統計を手動で開く。この playercore では Ctrl+Alt+Shift+D、または Ctrl+Alt+Shift+Q です。開いたまま 3 分再生する。診断フックは統計を自分では開きません。
+5. 同じ作品で Auto Tab Discard により休止し、タブを選び直す。自動のページ再読み込みはしない。戻ったあとに、もう一度同じ操作で再生統計を開く。開いたまま 3 分見る。統計を開き直さないと、復帰後の bitrate と codec は null のままです。
+6. オプションからログを書き出す。通常再生と休止復帰の両方が残っていることを確認する。
+7. 通常再生、通常の再読み込み、タブ切替、次話移動も、比較用に残せるなら残す。
 
 合成テストは `node --test test/diagnostic.test.js` です。これは候補順の逆転、候補の遅延、同一 URL のプレーヤー交換、メニュー不在、移動中のキャンセル、手動 Override、`setMaxBitrate` が false のときのループ期待、再入と有限サンプルを fixture で見ます。Netflix 上でその現象が起きたことの確認ではありません。
 
