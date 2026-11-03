@@ -15,22 +15,28 @@ node --test test/vm_boundary.test.js
 
 ブラウザ試験の URL は `127.0.0.1` 上の `/netflix.com/watch/80000000` です。数字は、元スクリプトが watch ページと判定するための印です。Netflix へは接続していません。
 
+## 測定の範囲
+
+reload が 0 という数値は、`runSignalProbe` の直前直後だけです。そこには、ページから送った DOM イベントと、ソースのタイマーが動いているあいだの時計のずれが含まれます。baseline、診断版 `5941c8b`、現在の head の 3 本を同じ条件で比べたのは、この段階のクリック数、keydown、メニュー記録、player 世代の記録です。
+
+CDP の `Page.setWebLifecycleState`（frozen から active）と `Network.emulateNetworkConditions`（offline から online）は、そのあとで、診断版 `5941c8b` と現在の head だけが実行します。baseline はこのブロックを通りません。CDP のあとで断言しているのは Override のクリック数だけです。遷移回数とドキュメント GET は、CDP の段階では取り直していません。3 本の比較は CDP には及びません。
+
 ## 仮説と結果
 
-1. URL が同じまま、visibility / pageshow / freeze / resume / online / offline や時計のずれで、bitrate スクリプトが Override をやり直す。baseline、診断版 `5941c8b`、現在の head のどれでも、最初の 1 回からクリックは増えませんでした。送った DOM イベントはリスナーの試験です。
-2. 診断フックが baseline に無い reload や Override を足す。3 本ともクリックは 1、ドキュメントの再取得は 0 でした。`netflix_max_bitrate.js` のバイト列は `baseline/v1.34.0` と一致します。
-3. 同じ URL で video 要素を足し、候補の末尾が小さい bitrate のメニューを fixture が差し込む。これはプレーヤーが取り替わった条件の模型です。Netflix がスリープ後にそうする証拠ではありません。模型のあと、Override は増えていません。診断版だけが player 世代の記録を 0 から 1 に増やしました。
-4. `online` を Netflix へ届くこととみなす。CDP の offline から online のあと、クリックは 1、reload は 0 です。`navigator.onLine` が true でも、そのホストへ届くことは意味しません。
+1. URL が同じまま、送った visibility / pageshow / freeze / resume / online / offline や時計のずれで、bitrate スクリプトが Override をやり直す。これは `runSignalProbe` の範囲です。baseline、`5941c8b`、現在の head のどれでも、最初の 1 回からクリックは増えませんでした。送った DOM イベントはリスナーの試験です。
+2. 診断フックが baseline に無い Override を足す。3 本のクリック数は、この probe の段階で同じ 1 です。`netflix_max_bitrate.js` のバイト列は `baseline/v1.34.0` と一致します。ドキュメントの再取得が 0 なのも、この probe の直前直後だけです。
+3. 同じ URL で video 要素を足し、候補の末尾が小さい bitrate のメニューを fixture が差し込む。これは probe 内の模型です。Netflix がスリープ後にそうする証拠ではありません。模型のあと、Override は増えていません。診断版だけが player 世代の記録を 0 から 1 に増やしました。
+4. CDP の offline から online のあと、診断版と現在の head ではクリックが 1 のままでした。baseline はこの CDP を実行していません。この段階の reload 回数は測っていません。`navigator.onLine` が true でも、そのホストへ届くことは意味しません。
 5. 同一タスクの候補追加を、診断ログが遅延更新として重複記録する。baseline にはメニュー記録がありません。`5941c8b` と現在の head は、同一タスクで `menu-built` が 1、同一タスクの `menu-updated` は 0、次のタスクで足した 1 件だけ `menu-updated` でした。
-6. `Date.now` の前後 1 時間を、ソースのタイマーが動いているあいだ維持する。baseline は interval のコールバックが forward 11 回、back 3 回、その時刻を見ました。診断版はそれに加え、サンプルの `at` が forward 1 件、back 2 件、時計を戻したあと 1 件でした。`performance.now` はその 1 時間には飛びません。別 iframe の `performance.now` は記録しただけで、time origin をまたいで引き算していません。
+6. `Date.now` の前後 1 時間を、ソースのタイマーが動いているあいだ維持する。これは probe の範囲です。baseline は interval のコールバックが forward 11 回、back 3 回、その時刻を見ました。診断版はそれに加え、サンプルの `at` が forward 1 件、back 2 件、時計を戻したあと 1 件でした。`performance.now` はその 1 時間には飛びません。別 iframe の `performance.now` は記録しただけで、time origin をまたいで引き算していません。
 
-時計のずらし、送った DOM イベント、CDP の page lifecycle frozen→active、CDP の network offline→online は、それぞれ別の操作です。どれも macOS のスリープではありません。
+時計のずらし、送った DOM イベント、CDP の page lifecycle、CDP の network emulation は、それぞれ別の操作です。どれも macOS のスリープではありません。
 
 ## reload の検出
 
 `Location.prototype.reload` の差し替えは使っていません。`location.reload` はインスタンス自身の LegacyUnforgeable なので、prototype の差し替えでは本物の reload を数えられません。
 
-検出は、主フレームの `Page.frameNavigated` と、watch 用ドキュメントの HTTP GET です。対照として `location.reload()` を 1 回呼ぶと、遷移は 1 から 2、ドキュメント取得も 1 から 2 になりました。信号試験のあいだは、どちらも増えていません。ソースに `location.reload` が無い、という静的確認はこれとは別です。
+検出は、主フレームの `Page.frameNavigated` と、watch 用ドキュメントの HTTP GET です。対照として `location.reload()` を 1 回呼ぶと、遷移は 1 から 2、ドキュメント取得も 1 から 2 になりました。`runSignalProbe` の直前直後では、どちらも増えていません。CDP の freeze と network の段階では、この差分を取り直していません。ソースに `location.reload` が無い、という静的確認はこれとは別です。
 
 ## 入れなかったもの
 
@@ -38,6 +44,8 @@ node --test test/vm_boundary.test.js
 
 復帰のたびに Override を押す処理も入れていません。Override は現在時刻への seek を伴います。
 
-## まだ無いもの
+## 再現していないもの
 
-Mac のスリープで、どのトラックが選ばれ、描画解像度がどう変わったかの記録です。それを VM だけで再生するには、作品や Cookie を含まない、復帰前後の候補一覧、選択値、描画解像度、bitrate、codec の時系列が要ります。その記録はまだありません。Mac の操作や、ビルドの導入は求めていません。
+描画が鮮明から粗く変わること、および再生統計上の解像度が 1080p から低い値へ変わることは、この VM では再現していません。ユーザーは、統計上の解像度が落ちたのか、見た目だけが粗くなったのかを、まだ確認していません。画質を戻すコードは未実装です。
+
+VM だけでその遷移を再生するのに足りないのは、選択されたトラックと、描画中の幅・高さ、bitrate、codec が、粗くなった時刻の前後で別々に残った時系列です。リポジトリ、この PR、既存の Cloud artifact のどれにも、その時系列はありません。既存の zip と `vm_boundary_report_e87141d.json` は、ローカル fixture のクリックとログ境界だけです。
