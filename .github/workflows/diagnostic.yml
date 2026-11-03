@@ -14,5 +14,20 @@ jobs:
           node-version: "22"
       - name: Syntax check
         run: node --check diagnostic/core.js && node --check diagnostic/page_hook.js && node --check diagnostic/bridge.js && node --check pages/options.js && node --check content_script.js && node --check netflix_max_bitrate.js
-      - name: Diagnostic fixtures
+      - name: Node fixtures only
         run: node --test test/diagnostic.test.js
+
+  vm-boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Chrome
+        run: |
+          sudo apt-get update
+          wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt-get install -y /tmp/chrome.deb
+      - name: Browser boundary
+        run: node --test test/vm_boundary.test.js

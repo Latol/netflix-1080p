@@ -2,20 +2,48 @@
 <html>
 <head><meta charset="utf-8"><title>fixture</title></head>
 <body>
-<script src="/diagnostic/core.js"></script>
 <script>
 window.__menu = [];
+window.__samples = [];
+window.__players = [];
 window.__clicks = 0;
 window.__keydowns = 0;
-window.__reloads = 0;
+window.__clockMode = "real";
+window.__timerAt = [];
+window.__realSetTimeout = window.setTimeout.bind(window);
+window.__realSetInterval = window.setInterval.bind(window);
+window.__realDateNow = Date.now.bind(Date);
+Date.now = function () {
+    var base = window.__realDateNow();
+    if (window.__clockMode === "forward") return base + 60 * 60 * 1000;
+    if (window.__clockMode === "back") return base - 60 * 60 * 1000;
+    return base;
+};
+window.setTimeout = function (fn, ms) {
+    return window.__realSetTimeout(function () {
+        window.__timerAt.push(Date.now());
+        return fn();
+    }, ms);
+};
+window.setInterval = function (fn, ms) {
+    return window.__realSetInterval(function () {
+        window.__timerAt.push(Date.now());
+        return fn();
+    }, ms);
+};
 window.addEventListener("message", function (event) {
     var data = event.data;
-    if (!data || data.source !== "netflix-1080p-diagnostic" || !data.event || data.event.type !== "menu") return;
-    if (data.event.label !== "video") return;
-    window.__menu.push({
-        phase: data.event.phase,
-        count: data.event.snapshot ? data.event.snapshot.count : 0
-    });
+    if (!data || data.source !== "netflix-1080p-diagnostic" || !data.event) return;
+    if (data.event.type === "menu" && data.event.label === "video") {
+        window.__menu.push({
+            phase: data.event.phase,
+            count: data.event.snapshot ? data.event.snapshot.count : 0
+        });
+    }
+    if (data.event.type === "sample") {
+        window.__samples.push({ at: data.event.at, perf: data.event.perf, index: data.event.index });
+    }
+    if (data.event.type === "player") window.__players.push({ replaced: data.event.replaced === true, playerGeneration: data.event.playerGeneration });
 });
 document.addEventListener("click", function (event) {
     if (event.target && event.target.id === "override-button") window.__clicks += 1;
@@ -23,13 +51,13 @@ document.addEventListener("click", function (event) {
 window.addEventListener("keydown", function (event) {
     if (event.ctrlKey && event.altKey && event.shiftKey) window.__keydowns += 1;
 }, true);
-var originalReload = Location.prototype.reload;
-Location.prototype.reload = function () {
-    window.__reloads += 1;
-};
 </script>
-<script src="/diagnostic/page_hook.js"></script>
+<!-- BUNDLE_SCRIPTS -->
 <script>
+function wait(ms) {
+    return new Promise(function (resolve) { window.__realSetTimeout(resolve, ms); });
+}
+
 function videoSelect(values) {
     var wrap = document.createElement("div");
     var label = document.createElement("div");
@@ -67,35 +95,33 @@ window.runMenuProbe = function () {
         option.selected = index === list.length - 1;
         select.appendChild(option);
     });
-    return new Promise(function (resolve) {
-        setTimeout(function () {
-            var built = window.__menu.filter(function (event) { return event.phase === "menu-built"; });
-            var updated = window.__menu.filter(function (event) { return event.phase === "menu-updated"; });
-            var extra = document.createElement("option");
-            extra.value = "8000000";
-            extra.text = "8000000";
-            select.appendChild(extra);
-            setTimeout(function () {
-                var later = window.__menu.filter(function (event) { return event.phase === "menu-updated"; });
-                resolve({
-                    label: "mutation_observer_same_task",
-                    videoMenuBuilt: built.length,
-                    videoMenuUpdatedSameTurn: updated.length,
-                    videoMenuUpdatedLater: later.length,
-                    laterCount: later.length ? later[later.length - 1].count : 0
-                });
-            }, 30);
-        }, 30);
+    return wait(40).then(function () {
+        var built = window.__menu.filter(function (event) { return event.phase === "menu-built"; });
+        var updated = window.__menu.filter(function (event) { return event.phase === "menu-updated"; });
+        var extra = document.createElement("option");
+        extra.value = "8000000";
+        extra.text = "8000000";
+        select.appendChild(extra);
+        return wait(40).then(function () {
+            var later = window.__menu.filter(function (event) { return event.phase === "menu-updated"; });
+            return {
+                label: "mutation_observer_same_task",
+                videoMenuBuilt: built.length,
+                videoMenuUpdatedSameTurn: updated.length,
+                videoMenuUpdatedLater: later.length,
+                laterCount: later.length ? later[later.length - 1].count : 0
+            };
+        });
     });
 };
 
-function installPlaybackMenu() {
+function installPlaybackMenu(values) {
     var old = document.getElementById("playback-menu");
     if (old) old.remove();
     var root = document.createElement("div");
     root.id = "playback-menu";
     root.className = "player-streams";
-    root.appendChild(videoSelect([300000, 5800000]));
+    root.appendChild(videoSelect(values));
     var audioWrap = document.createElement("div");
     var audioLabel = document.createElement("div");
     audioLabel.textContent = "Audio Bitrate";
@@ -127,18 +153,23 @@ function dispatchSignal(type, extra) {
     window.dispatchEvent(event);
 }
 
+function jumped(stamp, realBase, direction) {
+    if (direction === "forward") return stamp > realBase + 30 * 60 * 1000;
+    return stamp < realBase - 30 * 60 * 1000;
+}
+
 window.readProbe = function () {
-    return {
-        clicks: window.__clicks,
-        keydowns: window.__keydowns,
-        reloads: window.__reloads
-    };
+    return { clicks: window.__clicks, keydowns: window.__keydowns, players: window.__players.length };
 };
 
 window.runSignalProbe = function () {
-    var settings = document.createElement("script");
-    settings.id = "netflix-1080p-settings";
-    settings.type = "application/json";
+    var settings = document.getElementById("netflix-1080p-settings");
+    if (!settings) {
+        settings = document.createElement("script");
+        settings.id = "netflix-1080p-settings";
+        settings.type = "application/json";
+        document.documentElement.appendChild(settings);
+    }
     settings.text = JSON.stringify({
         use6Channels: true,
         setMaxBitrate: true,
@@ -147,63 +178,103 @@ window.runSignalProbe = function () {
         disableAV1: true,
         showAllSubs: true
     });
-    document.documentElement.appendChild(settings);
     var script = document.createElement("script");
     script.src = "/netflix_max_bitrate.js";
     document.documentElement.appendChild(script);
     return new Promise(function (resolve, reject) {
         script.onload = function () {
-            setTimeout(function () {
-                installPlaybackMenu();
-                setTimeout(function () {
-                    var initial = window.readProbe();
-                    var dateNow = Date.now;
-                    var perfA = performance.now();
-                    Date.now = function () { return dateNow() + 60 * 60 * 1000; };
-                    var forwardDelta = Date.now() - dateNow();
-                    Date.now = function () { return dateNow() - 60 * 60 * 1000; };
-                    var backwardDelta = Date.now() - dateNow();
-                    Date.now = dateNow;
-                    var perfB = performance.now();
-                    dispatchSignal("visibilitychange");
-                    dispatchSignal("visibilitychange");
-                    dispatchSignal("pageshow", { persisted: false });
-                    dispatchSignal("pageshow", { persisted: true });
-                    dispatchSignal("freeze");
-                    dispatchSignal("resume");
-                    dispatchSignal("online");
-                    dispatchSignal("online");
-                    dispatchSignal("offline");
-                    dispatchSignal("pageshow", { persisted: true });
-                    var frame = document.createElement("iframe");
-                    document.body.appendChild(frame);
-                    var otherOriginNow = frame.contentWindow.performance.now();
-                    setTimeout(function () {
-                        var video = document.createElement("video");
-                        document.body.appendChild(video);
-                        setTimeout(function () {
-                            resolve({
-                                label: "dispatched_dom_events_and_simulated_clock",
-                                notOsWake: true,
-                                notBrowserFreeze: true,
-                                initialClicks: initial.clicks,
-                                clicksAfterSignals: window.__clicks,
-                                keydownsAfterInitial: initial.keydowns,
-                                keydownsAfterSignals: window.__keydowns,
-                                clicksAfterPlayerReplacement: window.__clicks,
-                                reloads: window.__reloads,
-                                clockForwardDateDelta: forwardDelta,
-                                clockBackwardDateDelta: backwardDelta,
-                                performanceDeltaSameDocument: perfB - perfA,
-                                otherDocumentPerformanceNow: otherOriginNow,
-                                comparedMonotonicAcrossTimeOrigins: false,
-                                onlineMeansNetflixReachable: false,
-                                missingOnlineStillNoReload: window.__reloads === 0
+            wait(700).then(function () {
+                installPlaybackMenu([300000, 5800000]);
+                return wait(500);
+            }).then(function () {
+                var initial = window.readProbe();
+                var realBase = window.__realDateNow();
+                window.__clockMode = "forward";
+                var forwardStartSamples = window.__samples.length;
+                var forwardStartTimers = window.__timerAt.length;
+                return wait(1600).then(function () {
+                    var forwardSamples = window.__samples.slice(forwardStartSamples).filter(function (sample) {
+                        return jumped(sample.at, realBase, "forward");
+                    });
+                    var forwardTimers = window.__timerAt.slice(forwardStartTimers).filter(function (stamp) {
+                        return jumped(stamp, realBase, "forward");
+                    });
+                    window.__clockMode = "back";
+                    var backStartSamples = window.__samples.length;
+                    var backStartTimers = window.__timerAt.length;
+                    return wait(1600).then(function () {
+                        var backSamples = window.__samples.slice(backStartSamples).filter(function (sample) {
+                            return jumped(sample.at, realBase, "back");
+                        });
+                        var backTimers = window.__timerAt.slice(backStartTimers).filter(function (stamp) {
+                            return jumped(stamp, realBase, "back");
+                        });
+                        window.__clockMode = "real";
+                        var restoredStart = window.__samples.length;
+                        return wait(1300).then(function () {
+                            var restored = window.__samples.slice(restoredStart).filter(function (sample) {
+                                return Math.abs(sample.at - window.__realDateNow()) < 5 * 60 * 1000;
                             });
-                        }, 400);
-                    }, 700);
-                }, 400);
-            }, 700);
+                            dispatchSignal("visibilitychange");
+                            dispatchSignal("visibilitychange");
+                            dispatchSignal("pageshow", { persisted: false });
+                            dispatchSignal("pageshow", { persisted: true });
+                            dispatchSignal("freeze");
+                            dispatchSignal("resume");
+                            dispatchSignal("online");
+                            dispatchSignal("online");
+                            dispatchSignal("offline");
+                            var frame = document.createElement("iframe");
+                            document.body.appendChild(frame);
+                            var otherDocumentPerformanceNow = frame.contentWindow.performance.now();
+                            var sameDocumentPerformanceNow = performance.now();
+                            return wait(700).then(function () {
+                                var afterSignals = window.readProbe();
+                                var playersBefore = window.__players.length;
+                                installPlaybackMenu([5800000, 300000]);
+                                var replacement = document.createElement("video");
+                                document.body.appendChild(replacement);
+                                return wait(600).then(function () {
+                                    var menu = document.getElementById("playback-menu");
+                                    var optionValues = [];
+                                    if (menu) {
+                                        menu.querySelectorAll("select option").forEach(function (option) {
+                                            optionValues.push(option.value);
+                                        });
+                                    }
+                                    resolve({
+                                        label: "source_timers_under_altered_clock_then_dispatched_signals",
+                                        notOsWake: true,
+                                        notBrowserFreeze: true,
+                                        notQualityTransition: true,
+                                        initialClicks: initial.clicks,
+                                        clicksAfterClock: afterSignals.clicks,
+                                        clicksAfterSignals: afterSignals.clicks,
+                                        keydownsAfterInitial: initial.keydowns,
+                                        keydownsAfterSignals: afterSignals.keydowns,
+                                        clicksAfterPlayerReplacement: window.__clicks,
+                                        forwardTimerCallbacks: forwardTimers.length,
+                                        backwardTimerCallbacks: backTimers.length,
+                                        forwardSamples: forwardSamples.length,
+                                        backwardSamples: backSamples.length,
+                                        restoredSamples: restored.length,
+                                        forwardSampleAt: forwardSamples.length ? forwardSamples[0].at : null,
+                                        forwardSamplePerf: forwardSamples.length ? forwardSamples[0].perf : null,
+                                        playersBeforeReplacement: playersBefore,
+                                        playersAfterReplacement: window.__players.length,
+                                        modelOptionValues: optionValues,
+                                        modelLabel: "player_and_reversed_menu_inserted_by_fixture",
+                                        sameDocumentPerformanceNow: sameDocumentPerformanceNow,
+                                        otherDocumentPerformanceNow: otherDocumentPerformanceNow,
+                                        comparedMonotonicAcrossTimeOrigins: false,
+                                        onlineMeansNetflixReachable: false
+                                    });
+                                });
+                            });
+                        });
+                    });
+                });
+            }).catch(reject);
         };
         script.onerror = function () { reject(new Error("bitrate script failed")); };
     });

@@ -1,52 +1,43 @@
-# VM で切った境界
+# VM の境界
 
-この文書は Linux 上の Chrome で、拡張の実ファイルをローカル fixture に読み込んだ結果です。macOS のスリープ、Netflix の DRM 再生、GPU 復帰は実証していません。画質低下を外から数値で差し込んだ再現でもありません。
-
-ユーザー申告では、診断版 `5941c8b` を使っているとき、タブ休止のあとは問題なく、Mac 本体のスリープ復帰後は最初が鮮明で、数秒から 30 秒で粗くなります。低下後の解像度、codec、bitrate、復帰時ログは未取得です。過去の「1080p から 540p 以下」は、今回の実測値としては扱いません。
-
-## 仮説と、この VM での予測
-
-1. URL が変わらないまま visibility / pageshow / freeze / resume / online が来ると、元の bitrate スクリプトが Override をやり直す。予測は、最初の成功のあとにクリックが増えることです。
-2. 診断フックが、v1.34.0 の選択処理に無い復帰操作を足している。予測は、reload か追加の Override です。
-3. 同じ URL で video 要素だけが増えても、URL 監視は Override を再開しない。予測は、クリックが増えないことです。
-4. `online` を Netflix へ届くこととみなして再接続する。予測は、オフライン模擬のあとでも reload も Override も増えないことです。仕様上、`navigator.onLine` が true でも特定のホストへ届くことは意味しません。
-5. 同一タスクで増えた候補を、診断ログが遅延更新として複数回残す。予測は、MutationObserver の1回のコールバックで `menu-built` が1件、その後の別タスクでだけ `menu-updated` が出ることです。
-6. `Date.now` の前後ジャンプや、別ドキュメントの `performance.now` の差をスリープ判定に使う。予測は、その差を復帰条件にしていないことです。`Date.now` は時計合わせでも動き、`performance.now` は単調ですが、別の time origin とは比べません。長いコールバック間隔も、スリープだけの印ではありません。
-
-visibility、pageshow、freeze、resume、online はページ、ドキュメント、接続の候補信号です。Mac のシステム復帰そのものではなく、Mac で必ず届くものでもありません。
+Linux の Chrome で、拡張の実ファイルをローカル fixture に読んだ結果です。画質が鮮明から粗いへ変わる遷移は、この実行では観測していません。macOS のスリープ、Netflix の DRM、GPU 復帰も実証していません。低い解像度を fixture に代入して、実機の不具合を捕まえたことにはしていません。
 
 ## 実行
 
-Chrome `156.0.8078.47`（この VM の Linux 版。ユーザーの Mac にある `156.0.8078.74` とは別です）。
+この VM の Chrome は `156.0.8078.47` です。ユーザーの Mac にある `156.0.8078.74` とは別のビルドです。
 
 ```text
-node --test test/diagnostic.test.js test/vm_boundary.test.js
+node --test test/diagnostic.test.js
+node --test test/vm_boundary.test.js
 ```
 
-`test/vm_boundary.test.js` は headless Chrome に `http://127.0.0.1/.../netflix.com/watch/fixture` を開きます。ホストは Netflix ではなく、URL 文字列が元スクリプトの watch 正規表現に合うだけです。Netflix へは接続していません。
+前者は node の fixture です。後者は headless Chrome です。CI でもジョブを分けています。node の成功は、スリープ後の画質の回帰テストではありません。
 
-区分:
+ブラウザ試験の URL は `127.0.0.1` 上の `/netflix.com/watch/80000000` です。数字は、元スクリプトが watch ページと判定するための印です。Netflix へは接続していません。
 
-- `mutation_observer_same_task`: 実際の `diagnostic/page_hook.js` とブラウザの MutationObserver。
-- `dispatched_dom_events_and_simulated_clock`: ページから送った DOM イベントと、`Date.now` の差し替え。リスナーの有無と時計の模擬であり、ブラウザの凍結でも OS のスリープでもありません。
-- `chromium_page_lifecycle_cdp`: この Chrome が受けた `Page.setWebLifecycleState` の frozen から active。ページライフサイクルの凍結であり、OS のスリープではありません。
-- `chromium_network_emulation`: `Network.emulateNetworkConditions` の offline から online。Netflix への到達確認ではありません。
+## 仮説と結果
 
-結果（この実行）:
+1. URL が同じまま、visibility / pageshow / freeze / resume / online / offline や時計のずれで、bitrate スクリプトが Override をやり直す。baseline、診断版 `5941c8b`、現在の head のどれでも、最初の 1 回からクリックは増えませんでした。送った DOM イベントはリスナーの試験です。
+2. 診断フックが baseline に無い reload や Override を足す。3 本ともクリックは 1、ドキュメントの再取得は 0 でした。`netflix_max_bitrate.js` のバイト列は `baseline/v1.34.0` と一致します。
+3. 同じ URL で video 要素を足し、候補の末尾が小さい bitrate のメニューを fixture が差し込む。これはプレーヤーが取り替わった条件の模型です。Netflix がスリープ後にそうする証拠ではありません。模型のあと、Override は増えていません。診断版だけが player 世代の記録を 0 から 1 に増やしました。
+4. `online` を Netflix へ届くこととみなす。CDP の offline から online のあと、クリックは 1、reload は 0 です。`navigator.onLine` が true でも、そのホストへ届くことは意味しません。
+5. 同一タスクの候補追加を、診断ログが遅延更新として重複記録する。baseline にはメニュー記録がありません。`5941c8b` と現在の head は、同一タスクで `menu-built` が 1、同一タスクの `menu-updated` は 0、次のタスクで足した 1 件だけ `menu-updated` でした。
+6. `Date.now` の前後 1 時間を、ソースのタイマーが動いているあいだ維持する。baseline は interval のコールバックが forward 11 回、back 3 回、その時刻を見ました。診断版はそれに加え、サンプルの `at` が forward 1 件、back 2 件、時計を戻したあと 1 件でした。`performance.now` はその 1 時間には飛びません。別 iframe の `performance.now` は記録しただけで、time origin をまたいで引き算していません。
 
-- 同一タスクで option を2件足したとき `menu-built` は 1、同一タスクの `menu-updated` は 0。次のタスクで 1 件足すと `menu-updated` が 1、件数は 3。Bugbot の「同一ターンの候補追加が毎回別イベントになる」は、この呼び出しでは起きていません。
-- 元の `netflix_max_bitrate.js` は、メニューが揃ったあと Override を 1 回押しました。その後のイベント、時計の ±1 時間、video 要素の追加、CDP の freeze/active、offline/online のあと、クリックは 1 のまま、reload は 0 です。修飾キー付き keydown は最初の 3 件から増えていません。
-- 別 iframe の `performance.now` は記録しただけで、判定には引き算していません。
+時計のずらし、送った DOM イベント、CDP の page lifecycle frozen→active、CDP の network offline→online は、それぞれ別の操作です。どれも macOS のスリープではありません。
 
-## 採らなかった修正
+## reload の検出
 
-復帰信号で Override をやり直す処理は入れていません。この VM の経路では、URL が同じ間は元のスクリプトが Override を再開せず、診断フックも再開させていません。解像度が確認できていないトラックを、周期的な Override で選び直す根拠はありません。Override は playercore 上で現在時刻への seek を伴います。
+`Location.prototype.reload` の差し替えは使っていません。`location.reload` はインスタンス自身の LegacyUnforgeable なので、prototype の差し替えでは本物の reload を数えられません。
 
-タブ休止が問題ない、という申告は回帰条件として残します。今回のテストはそれを Mac で再確認していません。
+検出は、主フレームの `Page.frameNavigated` と、watch 用ドキュメントの HTTP GET です。対照として `location.reload()` を 1 回呼ぶと、遷移は 1 から 2、ドキュメント取得も 1 から 2 になりました。信号試験のあいだは、どちらも増えていません。ソースに `location.reload` が無い、という静的確認はこれとは別です。
 
-## まだ VM で見ていないもの
+## 入れなかったもの
 
-- macOS のスリープと、Apple の `mach_absolute_time` と `mach_continuous_time` の差。
-- Netflix のログイン、DRM、実映像、GPU 復帰。
-- 復帰後にプレーヤーが内部で取り替えるか、ABR が低いトラックのままになるか。
-- ユーザーの Mac にある診断ログ。Cloud へは転送していません。
+画質を戻すコードは入れていません。この入力では、暗号化されていないローカル映像も同梱 playercore も、Netflix のログインなしには ABR の切り替え面まで届きません。低い `videoWidth` を代入して再現と呼ぶことはしていません。
+
+復帰のたびに Override を押す処理も入れていません。Override は現在時刻への seek を伴います。
+
+## まだ無いもの
+
+Mac のスリープで、どのトラックが選ばれ、描画解像度がどう変わったかの記録です。それを VM だけで再生するには、作品や Cookie を含まない、復帰前後の候補一覧、選択値、描画解像度、bitrate、codec の時系列が要ります。その記録はまだありません。Mac の操作や、ビルドの導入は求めていません。
