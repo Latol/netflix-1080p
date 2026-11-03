@@ -61,9 +61,9 @@ function startServer(pinDir) {
 
 function writePins(pinDir) {
     fs.mkdirSync(path.join(pinDir, "5941c8b"), { recursive: true });
-    fs.writeFileSync(path.join(pinDir, "5941c8b", "core.js"), execFileSync("git", ["show", "5941c8b:diagnostic/core.js"], { cwd: root }));
-    fs.writeFileSync(path.join(pinDir, "5941c8b", "page_hook.js"), execFileSync("git", ["show", "5941c8b:diagnostic/page_hook.js"], { cwd: root }));
-    fs.writeFileSync(path.join(pinDir, "baseline-bitrate.js"), execFileSync("git", ["show", "origin/baseline/v1.34.0:netflix_max_bitrate.js"], { cwd: root }));
+    fs.writeFileSync(path.join(pinDir, "5941c8b", "core.js"), execFileSync("git", ["show", "5941c8b77eb0938ee86bba1ccc545b96ea1b71e4:diagnostic/core.js"], { cwd: root }));
+    fs.writeFileSync(path.join(pinDir, "5941c8b", "page_hook.js"), execFileSync("git", ["show", "5941c8b77eb0938ee86bba1ccc545b96ea1b71e4:diagnostic/page_hook.js"], { cwd: root }));
+    fs.writeFileSync(path.join(pinDir, "baseline-bitrate.js"), execFileSync("git", ["show", "d24b17cf230aa6fdfeed98035d56f33581a32bc0:netflix_max_bitrate.js"], { cwd: root }));
 }
 
 function waitForPortFile(profileDir) {
