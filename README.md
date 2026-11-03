@@ -4,6 +4,12 @@
 
 Chrome extension to play Netflix in 1080p and 5.1 as well as other QoL improvements.
 
+# Diagnostic build
+
+Branch `fix/discard-quality-drop` is a local diagnostic build of 1.34.0. It keeps the original bitrate selection. Capture steps, the settings handoff, and the device/fixture boundary are in [docs/diagnostic.md](docs/diagnostic.md).
+
+Unpacked extension ID: `paaingnmhpdddlckkplellcbindblmkd`. Disable the Web Store extension (`mdlbikciddolbenfkgggdegphnhmnfcg`) before loading this one.
+
 # Installation
 
 [Download the extension from the Chrome Webstore](https://chromewebstore.google.com/detail/new-netflix-1080p/mdlbikciddolbenfkgggdegphnhmnfcg)
