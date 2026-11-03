@@ -273,6 +273,25 @@
         return "other";
     }
 
+    function menuSignature(snapshot) {
+        if (!snapshot || !Array.isArray(snapshot.order)) return "";
+        const parts = [];
+        for (let i = 0; i < snapshot.order.length; i++) {
+            const item = snapshot.order[i];
+            parts.push(String(item.value) + (item.selected ? "*" : ""));
+        }
+        return parts.join("|");
+    }
+
+    function recordMenuIfChanged(tracker, signatures, label, snapshot, actor) {
+        if (!snapshot || !snapshot.count) return [];
+        const signature = menuSignature(snapshot);
+        if (signatures[label] === signature) return [];
+        signatures[label] = signature;
+        tracker.noteOptions(label, snapshot, actor);
+        return tracker.flush(label);
+    }
+
     function menuActor(input) {
         const trusted = input && input.trusted === true;
         const hidden = input && input.hideStylePresent === true;
@@ -1093,6 +1112,8 @@
         snapshotOptions: snapshotOptions,
         originalLastOptionIndex: originalLastOptionIndex,
         menuLabel: menuLabel,
+        menuSignature: menuSignature,
+        recordMenuIfChanged: recordMenuIfChanged,
         menuActor: menuActor,
         srcKind: srcKind,
         describeGlobalOptionsAssignment: describeGlobalOptionsAssignment,

@@ -702,3 +702,39 @@ test("two 3-minute captures survive the 250ms flush and chunk pruning", () => {
     assert.equal(exported.events.filter(function (event) { return event.type === "error" && event.code === "page-error"; }).length, 2);
     assert.equal(exported.retention.droppedOldest, 0);
 });
+
+test("same complete menu snapshot is one event; a later longer list is an update", () => {
+    const tracker = core.createMenuTracker();
+    const signatures = {};
+    const full = core.snapshotOptions([
+        { value: "300000", text: "300000", selected: false },
+        { value: "5800000", text: "5800000", selected: true },
+    ]);
+    const firstPass = [];
+    for (let i = 0; i < 4; i++) {
+        const produced = core.recordMenuIfChanged(tracker, signatures, "video", full, "unknown");
+        for (let j = 0; j < produced.length; j++) firstPass.push(produced[j]);
+    }
+    assert.equal(firstPass.length, 1);
+    assert.equal(firstPass[0].phase, "menu-built");
+    assert.equal(firstPass[0].snapshot.count, 2);
+    const grown = core.snapshotOptions([
+        { value: "300000", text: "300000", selected: false },
+        { value: "5800000", text: "5800000", selected: true },
+        { value: "8000000", text: "8000000", selected: false },
+    ]);
+    const second = core.recordMenuIfChanged(tracker, signatures, "video", grown, "unknown");
+    assert.equal(second.length, 1);
+    assert.equal(second[0].phase, "menu-updated");
+    assert.equal(second[0].snapshot.count, 3);
+});
+
+test("wake candidate signals are not wired to reload or override", () => {
+    const bitrate = read("netflix_max_bitrate.js");
+    const hook = read("diagnostic/page_hook.js");
+    assert.doesNotMatch(bitrate, /visibilitychange|pageshow|navigator\.onLine|pagehide/);
+    assert.doesNotMatch(hook, /visibilitychange|pageshow|navigator\.onLine/);
+    assert.doesNotMatch(bitrate, /location\.reload|tabs\.reload/);
+    assert.doesNotMatch(hook, /location\.reload|tabs\.reload/);
+    assert.doesNotMatch(hook, /maxbitrate_start/);
+});

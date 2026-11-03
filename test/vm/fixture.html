@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>fixture</title></head>
+<body>
+<script src="/diagnostic/core.js"></script>
+<script>
+window.__menu = [];
+window.__clicks = 0;
+window.__keydowns = 0;
+window.__reloads = 0;
+window.addEventListener("message", function (event) {
+    var data = event.data;
+    if (!data || data.source !== "netflix-1080p-diagnostic" || !data.event || data.event.type !== "menu") return;
+    if (data.event.label !== "video") return;
+    window.__menu.push({
+        phase: data.event.phase,
+        count: data.event.snapshot ? data.event.snapshot.count : 0
+    });
+});
+document.addEventListener("click", function (event) {
+    if (event.target && event.target.id === "override-button") window.__clicks += 1;
+}, true);
+window.addEventListener("keydown", function (event) {
+    if (event.ctrlKey && event.altKey && event.shiftKey) window.__keydowns += 1;
+}, true);
+var originalReload = Location.prototype.reload;
+Location.prototype.reload = function () {
+    window.__reloads += 1;
+};
+</script>
+<script src="/diagnostic/page_hook.js"></script>
+<script>
+function videoSelect(values) {
+    var wrap = document.createElement("div");
+    var label = document.createElement("div");
+    label.textContent = "Video Bitrate / VMAF";
+    var select = document.createElement("select");
+    wrap.appendChild(label);
+    wrap.appendChild(select);
+    values.forEach(function (value, index) {
+        var option = document.createElement("option");
+        option.value = String(value);
+        option.text = String(value);
+        option.selected = index === values.length - 1;
+        select.appendChild(option);
+    });
+    return wrap;
+}
+
+window.runMenuProbe = function () {
+    window.__menu = [];
+    var root = document.createElement("div");
+    root.className = "player-streams";
+    root.id = "menu-root";
+    var selectWrap = document.createElement("div");
+    var label = document.createElement("div");
+    label.textContent = "Video Bitrate / VMAF";
+    var select = document.createElement("select");
+    selectWrap.appendChild(label);
+    selectWrap.appendChild(select);
+    root.appendChild(selectWrap);
+    document.body.appendChild(root);
+    [300000, 5800000].forEach(function (value, index, list) {
+        var option = document.createElement("option");
+        option.value = String(value);
+        option.text = String(value);
+        option.selected = index === list.length - 1;
+        select.appendChild(option);
+    });
+    return new Promise(function (resolve) {
+        setTimeout(function () {
+            var built = window.__menu.filter(function (event) { return event.phase === "menu-built"; });
+            var updated = window.__menu.filter(function (event) { return event.phase === "menu-updated"; });
+            var extra = document.createElement("option");
+            extra.value = "8000000";
+            extra.text = "8000000";
+            select.appendChild(extra);
+            setTimeout(function () {
+                var later = window.__menu.filter(function (event) { return event.phase === "menu-updated"; });
+                resolve({
+                    label: "mutation_observer_same_task",
+                    videoMenuBuilt: built.length,
+                    videoMenuUpdatedSameTurn: updated.length,
+                    videoMenuUpdatedLater: later.length,
+                    laterCount: later.length ? later[later.length - 1].count : 0
+                });
+            }, 30);
+        }, 30);
+    });
+};
+
+function installPlaybackMenu() {
+    var old = document.getElementById("playback-menu");
+    if (old) old.remove();
+    var root = document.createElement("div");
+    root.id = "playback-menu";
+    root.className = "player-streams";
+    root.appendChild(videoSelect([300000, 5800000]));
+    var audioWrap = document.createElement("div");
+    var audioLabel = document.createElement("div");
+    audioLabel.textContent = "Audio Bitrate";
+    var audio = document.createElement("select");
+    [96, 640].forEach(function (value, index, list) {
+        var option = document.createElement("option");
+        option.value = String(value);
+        option.text = String(value);
+        option.selected = index === list.length - 1;
+        audio.appendChild(option);
+    });
+    audioWrap.appendChild(audioLabel);
+    audioWrap.appendChild(audio);
+    root.appendChild(audioWrap);
+    var button = document.createElement("button");
+    button.id = "override-button";
+    button.textContent = "Override";
+    button.addEventListener("click", function () {
+        root.remove();
+    });
+    root.appendChild(button);
+    document.body.appendChild(root);
+}
+
+function dispatchSignal(type, extra) {
+    var event = new Event(type, { bubbles: true });
+    if (extra) Object.keys(extra).forEach(function (key) { event[key] = extra[key]; });
+    document.dispatchEvent(event);
+    window.dispatchEvent(event);
+}
+
+window.readProbe = function () {
+    return {
+        clicks: window.__clicks,
+        keydowns: window.__keydowns,
+        reloads: window.__reloads
+    };
+};
+
+window.runSignalProbe = function () {
+    var settings = document.createElement("script");
+    settings.id = "netflix-1080p-settings";
+    settings.type = "application/json";
+    settings.text = JSON.stringify({
+        use6Channels: true,
+        setMaxBitrate: true,
+        disableVP9: true,
+        disableAVChigh: true,
+        disableAV1: true,
+        showAllSubs: true
+    });
+    document.documentElement.appendChild(settings);
+    var script = document.createElement("script");
+    script.src = "/netflix_max_bitrate.js";
+    document.documentElement.appendChild(script);
+    return new Promise(function (resolve, reject) {
+        script.onload = function () {
+            setTimeout(function () {
+                installPlaybackMenu();
+                setTimeout(function () {
+                    var initial = window.readProbe();
+                    var dateNow = Date.now;
+                    var perfA = performance.now();
+                    Date.now = function () { return dateNow() + 60 * 60 * 1000; };
+                    var forwardDelta = Date.now() - dateNow();
+                    Date.now = function () { return dateNow() - 60 * 60 * 1000; };
+                    var backwardDelta = Date.now() - dateNow();
+                    Date.now = dateNow;
+                    var perfB = performance.now();
+                    dispatchSignal("visibilitychange");
+                    dispatchSignal("visibilitychange");
+                    dispatchSignal("pageshow", { persisted: false });
+                    dispatchSignal("pageshow", { persisted: true });
+                    dispatchSignal("freeze");
+                    dispatchSignal("resume");
+                    dispatchSignal("online");
+                    dispatchSignal("online");
+                    dispatchSignal("offline");
+                    dispatchSignal("pageshow", { persisted: true });
+                    var frame = document.createElement("iframe");
+                    document.body.appendChild(frame);
+                    var otherOriginNow = frame.contentWindow.performance.now();
+                    setTimeout(function () {
+                        var video = document.createElement("video");
+                        document.body.appendChild(video);
+                        setTimeout(function () {
+                            resolve({
+                                label: "dispatched_dom_events_and_simulated_clock",
+                                notOsWake: true,
+                                notBrowserFreeze: true,
+                                initialClicks: initial.clicks,
+                                clicksAfterSignals: window.__clicks,
+                                keydownsAfterInitial: initial.keydowns,
+                                keydownsAfterSignals: window.__keydowns,
+                                clicksAfterPlayerReplacement: window.__clicks,
+                                reloads: window.__reloads,
+                                clockForwardDateDelta: forwardDelta,
+                                clockBackwardDateDelta: backwardDelta,
+                                performanceDeltaSameDocument: perfB - perfA,
+                                otherDocumentPerformanceNow: otherOriginNow,
+                                comparedMonotonicAcrossTimeOrigins: false,
+                                onlineMeansNetflixReachable: false,
+                                missingOnlineStillNoReload: window.__reloads === 0
+                            });
+                        }, 400);
+                    }, 700);
+                }, 400);
+            }, 700);
+        };
+        script.onerror = function () { reject(new Error("bitrate script failed")); };
+    });
+};
+</script>
+</body>
+</html>

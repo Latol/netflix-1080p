@@ -119,17 +119,8 @@
         lastSelected.playerGeneration = playerGeneration;
     }
 
-    function menuSignature(snapshot) {
-        const parts = [];
-        for (let i = 0; i < snapshot.order.length; i++) {
-            const item = snapshot.order[i];
-            parts.push(item.value + (item.selected ? "*" : ""));
-        }
-        return parts.join("|");
-    }
-
     function rememberMenu(label, snapshot) {
-        menuSignatures[label] = menuSignature(snapshot);
+        menuSignatures[label] = Core.menuSignature(snapshot);
     }
 
     function recordOverride(root, actor) {
@@ -150,12 +141,7 @@
         for (let i = 0; i < selects.length; i++) {
             const label = Core.menuLabel(labelTextFor(selects[i]));
             const snapshot = Core.snapshotOptions(optionsFrom(selects[i]));
-            if (!snapshot.count) continue;
-            const signature = menuSignature(snapshot);
-            if (menuSignatures[label] === signature) continue;
-            menuSignatures[label] = signature;
-            menuTracker.noteOptions(label, snapshot, actor);
-            const flushed = menuTracker.flush(label);
+            const flushed = Core.recordMenuIfChanged(menuTracker, menuSignatures, label, snapshot, actor);
             for (let j = 0; j < flushed.length; j++) emit(flushed[j]);
         }
     }
