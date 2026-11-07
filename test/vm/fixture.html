@@ -5,6 +5,7 @@
 <script>
 window.__menu = [];
 window.__samples = [];
+window.__sampler = [];
 window.__players = [];
 window.__clicks = 0;
 window.__keydowns = 0;
@@ -50,6 +51,15 @@ window.addEventListener("message", function (event) {
         });
     }
     if (data.event.type === "player") window.__players.push({ replaced: data.event.replaced === true, playerGeneration: data.event.playerGeneration });
+    if (data.event.type === "sampler") {
+        window.__sampler.push({
+            phase: data.event.phase,
+            reason: data.event.reason,
+            generation: data.event.generation,
+            perfGapMs: data.event.perfGapMs,
+            dateGapMs: data.event.dateGapMs
+        });
+    }
 });
 document.addEventListener("click", function (event) {
     if (event.target && event.target.id === "override-button") window.__clicks += 1;
@@ -175,7 +185,14 @@ window.runDimensionProbe = function () {
     try {
         stream = canvas.captureStream(1);
     } catch (error) {
-        return Promise.resolve({ supported: false, label: "local_nondrm_canvas_capture", timing: "real_chrome_timers" });
+        return Promise.resolve({
+            supported: false,
+            limitation: "capture-unsupported",
+            label: "local_nondrm_canvas_capture",
+            timing: "real_chrome_timers",
+            notNetflix: true,
+            notQualityDrop: true
+        });
     }
     var video = document.createElement("video");
     video.muted = true;
@@ -199,7 +216,45 @@ window.runDimensionProbe = function () {
             };
         });
     }).catch(function () {
-        return { supported: false, label: "local_nondrm_canvas_capture", timing: "real_chrome_timers" };
+        return {
+            supported: false,
+            limitation: "capture-unsupported",
+            label: "local_nondrm_canvas_capture",
+            timing: "real_chrome_timers",
+            notNetflix: true,
+            notQualityDrop: true
+        };
+    });
+};
+
+window.runGapWiringProbe = function () {
+    var perfBase = performance.now.bind(performance);
+    var perfExtra = 0;
+    performance.now = function () { return perfBase() + perfExtra; };
+    var start = window.__sampler.length;
+    perfExtra += 20000;
+    return wait(700).then(function () {
+        var first = window.__sampler.slice(start).filter(function (event) {
+            return event.reason === "execution-gap" && (event.phase === "restart" || event.phase === "start");
+        });
+        var generation = first.length ? first[0].generation : null;
+        var afterFirst = window.__sampler.length;
+        perfExtra += 20000;
+        return wait(700).then(function () {
+            var extra = window.__sampler.slice(afterFirst).filter(function (event) {
+                return event.phase === "restart" || event.phase === "start";
+            });
+            return {
+                label: "page_hook_gap_wiring",
+                virtualClock: true,
+                notMacWake: true,
+                sameUrl: true,
+                executionGapEvents: first.length,
+                executionGapGeneration: generation,
+                rawPerfGapMs: first.length ? first[0].perfGapMs : null,
+                duplicateRestarts: extra.length
+            };
+        });
     });
 };
 

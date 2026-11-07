@@ -177,7 +177,8 @@
     const FLUSH_DELAY_MS = 250;
     const EXECUTION_GAP_MS = 15000;
     const SAMPLER_PHASES = ["start", "restart", "cancel", "complete", "gap"];
-    const SAMPLER_REASONS = ["execution-gap"];
+    const SAMPLER_REASONS = ["execution-gap", "clock-discontinuity"];
+    const DATE_DISCONTINUITY_MS = 15000;
     const CHUNK_EVENT_LIMIT = SAMPLE_COUNT + 70;
     const MAX_STORED_CHUNKS = 16;
 
@@ -933,7 +934,8 @@
             case "video-replaced":
                 return running ? "continue" : "ignore";
             case "execution-gap":
-                return running ? "note" : "start";
+            case "clock-discontinuity":
+                return running ? "restart" : "start";
             default:
                 return "ignore";
         }
@@ -941,8 +943,36 @@
 
     function classifyPollGap(input) {
         const perfGapMs = finiteOrNull(input && input.perfGapMs);
-        if (perfGapMs == null || perfGapMs < EXECUTION_GAP_MS) return null;
-        return "execution-gap";
+        const dateGapMs = finiteOrNull(input && input.dateGapMs);
+        if (perfGapMs != null && perfGapMs >= EXECUTION_GAP_MS) return "execution-gap";
+        if (dateGapMs != null && dateGapMs >= DATE_DISCONTINUITY_MS) return "clock-discontinuity";
+        return null;
+    }
+
+    function createCapturePolicy() {
+        let suppressUntilOrdinary = false;
+        return {
+            reset: function () {
+                suppressUntilOrdinary = false;
+            },
+            observe: function (input) {
+                const kind = classifyPollGap(input);
+                if (!kind) {
+                    suppressUntilOrdinary = false;
+                    return { action: "ignore", kind: null, coalesced: false };
+                }
+                if (suppressUntilOrdinary) {
+                    return { action: "ignore", kind: kind, coalesced: true };
+                }
+                suppressUntilOrdinary = true;
+                const running = Boolean(input && input.running);
+                return {
+                    action: running ? "restart" : "start",
+                    kind: kind,
+                    coalesced: false,
+                };
+            },
+        };
     }
 
     function createSampler(deps) {
@@ -1124,6 +1154,7 @@
         MAX_STORED_CHUNKS: MAX_STORED_CHUNKS,
         FLUSH_DELAY_MS: FLUSH_DELAY_MS,
         EXECUTION_GAP_MS: EXECUTION_GAP_MS,
+        DATE_DISCONTINUITY_MS: DATE_DISCONTINUITY_MS,
         CHUNK_EVENT_LIMIT: CHUNK_EVENT_LIMIT,
         ERROR_CODES: ERROR_CODES,
         STORE_EXTENSION_ID: STORE_EXTENSION_ID,
@@ -1164,6 +1195,7 @@
         createLocationTracker: createLocationTracker,
         decideSamplerAction: decideSamplerAction,
         classifyPollGap: classifyPollGap,
+        createCapturePolicy: createCapturePolicy,
         createSampler: createSampler,
         createPlayerTracker: createPlayerTracker,
         createMenuTracker: createMenuTracker,

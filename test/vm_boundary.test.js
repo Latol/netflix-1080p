@@ -263,6 +263,7 @@ test("chrome page boundary: clocks, reload detector, baseline and diagnostic", {
             };
             if (bundle === "head") {
                 bundles[bundle].dimensions = await evaluate(cdp, sessionId, "window.runDimensionProbe()");
+                bundles[bundle].gapWiring = await evaluate(cdp, sessionId, "window.runGapWiringProbe()");
             }
             if (bundle !== "baseline") {
                 let lifecycle = { attempted: true, supported: false, label: "chromium_page_lifecycle_cdp" };
@@ -336,10 +337,21 @@ test("chrome page boundary: clocks, reload detector, baseline and diagnostic", {
         if (network && network.supported) assert.equal(network.after.clicks, 1, bundle + " network");
     }
     const dimensions = report.bundles.head.dimensions;
-    if (dimensions && dimensions.supported && dimensions.elementWidth === 320) {
+    assert.ok(dimensions, "dimension probe missing");
+    assert.equal(dimensions.notQualityDrop, true);
+    if (!dimensions.supported) {
+        assert.equal(dimensions.limitation, "capture-unsupported");
+    } else {
+        assert.equal(dimensions.elementWidth, 320);
+        assert.equal(dimensions.elementHeight, 180);
         assert.ok(dimensions.samplesWithDimensions >= 1);
-        assert.equal(dimensions.notQualityDrop, true);
     }
+    const gapWiring = report.bundles.head.gapWiring;
+    assert.equal(gapWiring.virtualClock, true);
+    assert.equal(gapWiring.notMacWake, true);
+    assert.ok(gapWiring.executionGapEvents >= 1);
+    assert.equal(gapWiring.duplicateRestarts, 0);
+    assert.ok(gapWiring.rawPerfGapMs >= 15000);
     assert.equal(report.bundles.baseline.signals.clicksAfterSignals, report.bundles.diag5941.signals.clicksAfterSignals);
     assert.equal(report.bundles.diag5941.signals.clicksAfterSignals, report.bundles.head.signals.clicksAfterSignals);
 });

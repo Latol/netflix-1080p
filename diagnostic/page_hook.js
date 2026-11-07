@@ -194,6 +194,8 @@
         };
     }
 
+    const capturePolicy = Core.createCapturePolicy();
+
     const sampler = Core.createSampler({
         intervalMs: Core.SAMPLE_INTERVAL_MS,
         maxSamples: Core.SAMPLE_COUNT,
@@ -267,6 +269,9 @@
         const result = locations.update(href);
         if (result.kind === "unchanged") return;
         if (Core.clearsAttribution(result.kind)) clearAttribution();
+        if (result.kind === "leave-watch" || result.kind === "title-switch" || result.kind === "enter-watch") {
+            capturePolicy.reset();
+        }
         emit(result.publicEvent);
         applySampler(Core.decideSamplerAction({ running: sampler.isActive() }, result.kind));
     }
@@ -456,11 +461,18 @@
             const dateGapMs = date - lastPollDate;
             lastPollPerf = perf;
             lastPollDate = date;
+            const generationBefore = sampler.generation();
             onHref(String(location.href));
-            const gap = Core.classifyPollGap({ perfGapMs: perfGapMs, dateGapMs: dateGapMs });
-            if (gap && locations.watching()) {
-                applySampler(Core.decideSamplerAction({ running: sampler.isActive() }, gap), {
-                    reason: "execution-gap",
+            const decision = capturePolicy.observe({
+                perfGapMs: perfGapMs,
+                dateGapMs: dateGapMs,
+                running: sampler.isActive(),
+            });
+            if (sampler.generation() !== generationBefore) {
+                capturePolicy.reset();
+            } else if (decision.kind && locations.watching() && (decision.action === "start" || decision.action === "restart")) {
+                applySampler(decision.action, {
+                    reason: decision.kind,
                     perfGapMs: perfGapMs,
                     dateGapMs: dateGapMs,
                 });
@@ -475,6 +487,7 @@
             pollTimer = null;
         }
         observer.disconnect();
+        capturePolicy.reset();
         if (sampler.isActive()) {
             sampler.cancel("dispose");
             emit({

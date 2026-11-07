@@ -748,11 +748,11 @@ test("completed sampler stays idle so a later execution gap can record again", (
     assert.equal(completed, 1);
     assert.equal(sampler.isActive(), false);
     assert.equal(core.decideSamplerAction({ running: sampler.isActive() }, "execution-gap"), "start");
-    assert.equal(core.classifyPollGap({ perfGapMs: 500, dateGapMs: 60 * 60 * 1000 }), null);
+    assert.equal(core.classifyPollGap({ perfGapMs: 500, dateGapMs: 60 * 60 * 1000 }), "clock-discontinuity");
     assert.equal(core.classifyPollGap({ perfGapMs: 20000, dateGapMs: 20000 }), "execution-gap");
     sampler.start({ wasDiscarded: false });
     assert.equal(sampler.isActive(), true);
-    assert.equal(core.decideSamplerAction({ running: sampler.isActive() }, "execution-gap"), "note");
+    assert.equal(core.decideSamplerAction({ running: sampler.isActive() }, "execution-gap"), "restart");
     const during = samples.slice();
     clock.fireNext();
     assert.deepEqual(samples, during.concat([1]));
@@ -778,6 +778,67 @@ test("completed sampler stays idle so a later execution gap can record again", (
     assert.equal("title" in leaked, false);
     assert.equal(JSON.stringify(leaked).includes("81234567"), false);
     assert.equal(JSON.stringify(leaked).includes("token"), false);
+});
+
+test("clock discontinuity and near-complete interruption open one new window", () => {
+    assert.equal(core.classifyPollGap({ perfGapMs: 500, dateGapMs: 60 * 60 * 1000 }), "clock-discontinuity");
+    assert.equal(core.classifyPollGap({ perfGapMs: 1000, dateGapMs: 1000 }), null);
+    assert.equal(core.classifyPollGap({ perfGapMs: 400, dateGapMs: -60 * 60 * 1000 }), null);
+    assert.equal(core.classifyPollGap({ perfGapMs: 20000, dateGapMs: 20000 }), "execution-gap");
+    const clock = fakeClock();
+    const samples = [];
+    const generations = [];
+    const sampler = core.createSampler({
+        intervalMs: 1000,
+        maxSamples: 3,
+        now: () => 0,
+        schedule: clock.schedule,
+        clear: clock.clear,
+        onSample(info) {
+            samples.push(info.index);
+            generations.push(info.generation);
+        },
+    });
+    const policy = core.createCapturePolicy();
+    sampler.start({ wasDiscarded: false });
+    clock.fireNext();
+    clock.fireNext();
+    const pending = clock.timers.filter(Boolean).pop();
+    const firstGen = sampler.generation();
+    const decision = policy.observe({ perfGapMs: 20000, dateGapMs: 25000, running: sampler.isActive() });
+    assert.equal(decision.kind, "execution-gap");
+    assert.equal(decision.action, "restart");
+    sampler.start({ wasDiscarded: false });
+    pending();
+    clock.fireNext();
+    assert.deepEqual(samples, [1, 2, 1]);
+    assert.notEqual(generations[2], firstGen);
+    const duplicate = policy.observe({ perfGapMs: 60000, dateGapMs: 60000, running: sampler.isActive() });
+    assert.equal(duplicate.coalesced, true);
+    assert.equal(duplicate.action, "ignore");
+    assert.equal(sampler.generation(), generations[2]);
+    policy.observe({ perfGapMs: 500, dateGapMs: 500, running: true });
+    sampler.cancel("dispose");
+    assert.equal(sampler.isActive(), false);
+    policy.reset();
+    const afterDispose = policy.observe({ perfGapMs: 500, dateGapMs: 30000, running: false });
+    assert.equal(afterDispose.kind, "clock-discontinuity");
+    assert.equal(afterDispose.action, "start");
+    const stored = core.sanitizeEvent({
+        type: "sampler",
+        phase: "restart",
+        reason: "clock-discontinuity",
+        perfGapMs: 500,
+        dateGapMs: 30000,
+        generation: 3,
+        title: "Show",
+        href: "https://www.netflix.com/watch/81234567?token=abc",
+    });
+    assert.equal(stored.reason, "clock-discontinuity");
+    assert.equal(stored.perfGapMs, 500);
+    assert.equal(stored.dateGapMs, 30000);
+    assert.equal(JSON.stringify(stored).includes("81234567"), false);
+    assert.equal(JSON.stringify(stored).includes("Show"), false);
 });
 
 test("completion callback can start the next window without being cleared", () => {
