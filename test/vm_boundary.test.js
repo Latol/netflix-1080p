@@ -349,8 +349,9 @@ test("chrome page boundary: clocks, reload detector, baseline and diagnostic", {
     const gapWiring = report.bundles.head.gapWiring;
     assert.equal(gapWiring.virtualClock, true);
     assert.equal(gapWiring.notMacWake, true);
-    assert.ok(gapWiring.executionGapEvents >= 1);
-    assert.equal(gapWiring.duplicateRestarts, 0);
+    assert.equal(gapWiring.sameUrl, true);
+    assert.equal(gapWiring.executionGapEvents, 1);
+    assert.equal(typeof gapWiring.executionGapGeneration, "number");
     assert.ok(gapWiring.rawPerfGapMs >= 15000);
     assert.equal(report.bundles.baseline.signals.clicksAfterSignals, report.bundles.diag5941.signals.clicksAfterSignals);
     assert.equal(report.bundles.diag5941.signals.clicksAfterSignals, report.bundles.head.signals.clicksAfterSignals);

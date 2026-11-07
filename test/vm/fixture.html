@@ -14,6 +14,7 @@ window.__timerAt = [];
 window.__realSetTimeout = window.setTimeout.bind(window);
 window.__realSetInterval = window.setInterval.bind(window);
 window.__realDateNow = Date.now.bind(Date);
+window.__pendingHideRetries = 0;
 Date.now = function () {
     var base = window.__realDateNow();
     if (window.__clockMode === "forward") return base + 60 * 60 * 1000;
@@ -21,7 +22,10 @@ Date.now = function () {
     return base;
 };
 window.setTimeout = function (fn, ms) {
+    var hideRetry = ms === 200;
+    if (hideRetry) window.__pendingHideRetries += 1;
     return window.__realSetTimeout(function () {
+        if (hideRetry) window.__pendingHideRetries -= 1;
         window.__timerAt.push(Date.now());
         return fn();
     }, ms);
@@ -72,6 +76,21 @@ window.addEventListener("keydown", function (event) {
 <script>
 function wait(ms) {
     return new Promise(function (resolve) { window.__realSetTimeout(resolve, ms); });
+}
+
+function waitFor(predicate, boundMs) {
+    var started = window.__realDateNow();
+    return new Promise(function (resolve) {
+        (function tick() {
+            if (predicate()) resolve(true);
+            else if (window.__realDateNow() - started >= boundMs) resolve(false);
+            else window.__realSetTimeout(tick, 50);
+        })();
+    });
+}
+
+function diagnosticSampling() {
+    return globalThis.__nflx1080pDiagInstalled === true;
 }
 
 function videoSelect(values) {
@@ -174,6 +193,20 @@ function jumped(stamp, realBase, direction) {
     return stamp < realBase - 30 * 60 * 1000;
 }
 
+function clockPhaseReady(sampleStart, timerStart, realBase, direction) {
+    var samples = window.__samples.slice(sampleStart).filter(function (sample) {
+        if (direction === "restored") return Math.abs(sample.at - window.__realDateNow()) < 5 * 60 * 1000;
+        return jumped(sample.at, realBase, direction);
+    });
+    var timers = window.__timerAt.slice(timerStart).filter(function (stamp) {
+        if (direction === "restored") return Math.abs(stamp - window.__realDateNow()) < 5 * 60 * 1000;
+        return jumped(stamp, realBase, direction);
+    });
+    if (!diagnosticSampling()) return direction === "restored" ? true : timers.length >= 1;
+    if (direction === "restored") return samples.length >= 1;
+    return samples.length >= 1 && timers.length >= 1;
+}
+
 window.runDimensionProbe = function () {
     var canvas = document.createElement("canvas");
     canvas.width = 320;
@@ -229,32 +262,27 @@ window.runDimensionProbe = function () {
 
 window.runGapWiringProbe = function () {
     var perfBase = performance.now.bind(performance);
-    var perfExtra = 0;
-    performance.now = function () { return perfBase() + perfExtra; };
+    var extra = 20000;
+    performance.now = function () { return perfBase() + extra; };
     var start = window.__sampler.length;
-    perfExtra += 20000;
-    return wait(700).then(function () {
-        var first = window.__sampler.slice(start).filter(function (event) {
+    function gapStarts() {
+        return window.__sampler.slice(start).filter(function (event) {
             return event.reason === "execution-gap" && (event.phase === "restart" || event.phase === "start");
         });
-        var generation = first.length ? first[0].generation : null;
-        var afterFirst = window.__sampler.length;
-        perfExtra += 20000;
-        return wait(700).then(function () {
-            var extra = window.__sampler.slice(afterFirst).filter(function (event) {
-                return event.phase === "restart" || event.phase === "start";
-            });
-            return {
-                label: "page_hook_gap_wiring",
-                virtualClock: true,
-                notMacWake: true,
-                sameUrl: true,
-                executionGapEvents: first.length,
-                executionGapGeneration: generation,
-                rawPerfGapMs: first.length ? first[0].perfGapMs : null,
-                duplicateRestarts: extra.length
-            };
-        });
+    }
+    return waitFor(function () { return gapStarts().length >= 1; }, 4000).then(function () {
+        var first = gapStarts()[0] || null;
+        performance.now = perfBase;
+        return {
+            label: "page_hook_gap_wiring",
+            virtualClock: true,
+            notMacWake: true,
+            sameUrl: true,
+            coalescingCoveredBy: "unit",
+            executionGapEvents: first ? 1 : 0,
+            executionGapGeneration: first ? first.generation : null,
+            rawPerfGapMs: first ? first.perfGapMs : null
+        };
     });
 };
 
@@ -292,7 +320,9 @@ window.runSignalProbe = function () {
                 window.__clockMode = "forward";
                 var forwardStartSamples = window.__samples.length;
                 var forwardStartTimers = window.__timerAt.length;
-                return wait(1600).then(function () {
+                return waitFor(function () {
+                    return clockPhaseReady(forwardStartSamples, forwardStartTimers, realBase, "forward");
+                }, 4000).then(function () {
                     var forwardSamples = window.__samples.slice(forwardStartSamples).filter(function (sample) {
                         return jumped(sample.at, realBase, "forward");
                     });
@@ -302,7 +332,9 @@ window.runSignalProbe = function () {
                     window.__clockMode = "back";
                     var backStartSamples = window.__samples.length;
                     var backStartTimers = window.__timerAt.length;
-                    return wait(1600).then(function () {
+                    return waitFor(function () {
+                        return clockPhaseReady(backStartSamples, backStartTimers, realBase, "back");
+                    }, 4000).then(function () {
                         var backSamples = window.__samples.slice(backStartSamples).filter(function (sample) {
                             return jumped(sample.at, realBase, "back");
                         });
@@ -311,7 +343,9 @@ window.runSignalProbe = function () {
                         });
                         window.__clockMode = "real";
                         var restoredStart = window.__samples.length;
-                        return wait(1300).then(function () {
+                        return waitFor(function () {
+                            return clockPhaseReady(restoredStart, window.__timerAt.length, realBase, "restored");
+                        }, 4000).then(function () {
                             var restored = window.__samples.slice(restoredStart).filter(function (sample) {
                                 return Math.abs(sample.at - window.__realDateNow()) < 5 * 60 * 1000;
                             });
@@ -331,6 +365,7 @@ window.runSignalProbe = function () {
                             return wait(700).then(function () {
                                 var afterSignals = window.readProbe();
                                 var playersBefore = window.__players.length;
+                                return waitFor(function () { return window.__pendingHideRetries === 0; }, 5000).then(function () {
                                 installPlaybackMenu([5800000, 300000]);
                                 var replacement = document.createElement("video");
                                 document.body.appendChild(replacement);
@@ -369,6 +404,7 @@ window.runSignalProbe = function () {
                                         comparedMonotonicAcrossTimeOrigins: false,
                                         onlineMeansNetflixReachable: false
                                     });
+                                });
                                 });
                             });
                         });
