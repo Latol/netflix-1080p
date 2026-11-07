@@ -13,9 +13,9 @@ jobs:
         with:
           node-version: "22"
       - name: Syntax check
-        run: node --check diagnostic/core.js && node --check diagnostic/page_hook.js && node --check diagnostic/bridge.js && node --check pages/options.js && node --check content_script.js && node --check netflix_max_bitrate.js
+        run: node --check diagnostic/core.js && node --check diagnostic/page_hook.js && node --check diagnostic/bridge.js && node --check pages/options.js && node --check content_script.js && node --check netflix_max_bitrate.js && node --check test/vm/cdp.js && node --check test/options_export.test.js && node --check test/options_encoding.test.js
       - name: Node fixtures only
-        run: node --test test/diagnostic.test.js
+        run: node --test test/diagnostic.test.js test/options_encoding.test.js
 
   vm-boundary:
     runs-on: ubuntu-latest
@@ -33,3 +33,32 @@ jobs:
           sudo apt-get install -y /tmp/chrome.deb
       - name: Browser boundary
         run: node --test test/vm_boundary.test.js
+
+  options-export:
+    # Loads the real unpacked extension. Branded google-chrome-stable ignores --load-extension
+    # since Chrome 137, so this job uses Chrome for Testing instead of the vm-boundary job's Chrome.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Chrome for Testing
+        id: cft
+        run: |
+          output=$(npx --yes @puppeteer/browsers install chrome@stable --path "$RUNNER_TEMP/cft")
+          echo "$output"
+          echo "bin=${output##* }" >> "$GITHUB_OUTPUT"
+      - name: Options page export (pinned 5941c8b and head, ja and en-US)
+        run: node --test test/options_export.test.js
+        env:
+          CHROME_BIN: ${{ steps.cft.outputs.bin }}
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: options-export-report
+          path: /tmp/nflx-options-export-report.json
+          if-no-files-found: ignore

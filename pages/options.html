@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
     <head>
+        <meta charset="utf-8">
         <title>New Netflix 1080p Options</title>
         <link rel="stylesheet" href="picnic.min.css">
         <style>
@@ -67,7 +68,7 @@
                 <p id="diagnostic-status"></p>
                 <p>ユーザー提供のオプション画面では6項目すべてがチェックでした。codec の3項目は「無効化する」スイッチなので、チェックは VP9 / AVChigh / AV1 の無効化です。これは画面の観測で、元の拡張の保存値は読んでいません。比較の前に、上の6項目をその画面と同じにして Save してください。</p>
                 <button id="download-log" type="button">診断ログを書き出す</button>
-                <button id="clear-log" type="button">診断ログを消去</button>
+                <button id="clear-log" type="button" class="warning">診断ログを消去</button>
                 <span id="log-status"></span>
             </div>
         </div>

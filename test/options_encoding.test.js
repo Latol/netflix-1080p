@@ -47,6 +47,27 @@ test("diagnostic scripts stay pure ASCII so no page encoding can break them", ()
     }
 });
 
+test("options page declares utf-8 inside the first 1024 bytes", () => {
+    const html = readBytes("pages/options.html").toString("utf8");
+    const index = html.search(/<meta\s+charset=["']?utf-8["']?\s*\/?>/i);
+    assert.ok(index >= 0, "pages/options.html has no <meta charset=\"utf-8\">");
+    assert.ok(index < 1024, "charset declaration must be within the first 1024 bytes, found at " + index);
+    const headIndex = html.indexOf("<head>");
+    assert.ok(headIndex >= 0 && index > headIndex && index < html.indexOf("<title"), "charset declaration must come first in <head>");
+});
+
+test("options export reports failures instead of failing silently", () => {
+    const source = readBytes("pages/options.js").toString("utf8");
+    assert.match(source, /mergeDiagnosticStorage/);
+    assert.doesNotMatch(source, /\.sort\(/);
+    assert.match(source, /chrome\.runtime\.lastError/, "storage callbacks must check lastError");
+    assert.match(source, /window\.confirm\(/, "clearing the log must ask for confirmation");
+    assert.match(source, /document\.body\.appendChild\(link\)/, "download anchor must be attached to the document");
+    assert.match(source, /setTimeout\([\s\S]{0,120}?URL\.revokeObjectURL/, "object URL must be revoked later, not synchronously");
+    assert.doesNotMatch(source, /error\.message|err\.message/, "failure text must use fixed codes, never exception text");
+    assert.doesNotMatch(source, /DIAGNOSTIC_LOG_KEY/, "unused constant removed");
+});
+
 test("negative control: the 5941c8b core.js really failed under Shift_JIS", (t) => {
     let bytes;
     try {

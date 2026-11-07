@@ -4,12 +4,15 @@ Linux の Chrome で、拡張の実ファイルをローカル fixture に読ん
 
 ## 実行
 
-この VM の Chrome は `156.0.8078.47` です。ユーザーの Mac にある `156.0.8078.74` とは別のビルドです。
+この VM の Chrome は `156.0.8078.47` です。ユーザーの Mac にある `156.0.8078.74` とは別のビルドです。オプション画面の書き出し試験は別の環境、Linux の Chrome for Testing `153.0.8010.12`（Playwright 同梱）で実行しました。各試験は `/json/version` の値を report に書くので、実際に使った版はそちらを見ます。
 
 ```text
-node --test test/diagnostic.test.js
+node --test test/diagnostic.test.js test/options_encoding.test.js
 node --test test/vm_boundary.test.js
+CHROME_BIN=/path/to/chrome-for-testing node --test test/options_export.test.js
 ```
+
+`options_export` は拡張を `--load-extension` で実際に読み込みます。ブランド版 Google Chrome は 137 以降このフラグを無視するため、CI では別 job が Chrome for Testing を入れて実行します。拡張が読み込まれなかった場合、この試験は skip ではなく失敗します。
 
 前者は node の fixture です。後者は headless Chrome です。CI でもジョブを分けています。node の成功は、スリープ後の画質の回帰テストではありません。
 
@@ -66,3 +69,18 @@ CDP の `Page.setWebLifecycleState`（frozen から active）と `Network.emulat
 描画が鮮明から粗く変わること、および再生統計上の解像度が 1080p から低い値へ変わることは、この VM では再現していません。ユーザーは、統計上の解像度が落ちたのか、見た目だけが粗くなったのかを、まだ確認していません。画質を戻すコードは未実装です。
 
 VM だけでその遷移を再生するのに足りないのは、選択されたトラックと、描画中の幅・高さ、bitrate、codec が、粗くなった時刻の前後で別々に残った時系列です。リポジトリ、この PR、既存の Cloud artifact のどれにも、その時系列はありません。既存の zip と `vm_boundary_report_e87141d.json` は、ローカル fixture のクリックとログ境界だけです。
+
+## オプション画面の書き出し
+
+`test/options_export.test.js` は、配布済み 5941c8b と現在の head の 17 ファイルを unpacked 拡張として読み込み、`chrome-extension://paaingnmhpdddlckkplellcbindblmkd/pages/options.html` を開いて、本物のマウスイベントで「診断ログを書き出す」を押し、CDP の `Browser.downloadWillBegin` / `downloadProgress` でダウンロードを受け取ります。ja の脚は `--lang=ja` と `intl.charset_default=Shift_JIS` で、日本語ロケールの既定エンコードを強制します。en-US の脚は対照です。
+
+示したこと（Chrome for Testing 153、Linux）:
+
+- 5941c8b / ja: `document.characterSet` は `Shift_JIS`。読み込み時に `core.js` から `SyntaxError: Invalid regular expression: missing /`。`Netflix1080pDiagCore` は未定義、拡張 ID の表示は空、ボタンの文字は `險ｺ譁ｭ繝ｭ繧ｰ…` の文字化け。押すと `Error handling response: TypeError: Cannot read properties of undefined (reading 'mergeDiagnosticStorage')` が記録され、ダウンロードは始まらず、status も空のまま。空の storage でも、記録ありの storage でも同じ。
+- 5941c8b / en-US: `windows-1252`。`core.js` は読み込まれ、書き出しは成功する。文字は化ける。不動はロケール依存。
+- head / ja と en-US: `UTF-8`。文字化けなし。空、3 チャンク、16 チャンク 4000 件（書き出し約 14 MB）、legacy key と不正値を混ぜた storage のすべてで、ファイル名 `netflix-1080p-diagnostic.json` のダウンロードが完了し、JSON の schema、件数、チャンク数が一致する。消去は `confirm` を出し、キャンセルでは何も消えず、承認では診断チャンクだけ消える。
+
+示していないこと:
+
+- Mac の Chrome 156、macOS のロケール設定、ユーザーのプロファイルと実際の保存データ。ユーザーの Mac で同じ復号が起きたことは、この試験では確認できません。
+- 画質低下との関係。これはオプション画面の書き出し経路だけの話で、再生には触れていません。
