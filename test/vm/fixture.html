@@ -41,7 +41,13 @@ window.addEventListener("message", function (event) {
         });
     }
     if (data.event.type === "sample") {
-        window.__samples.push({ at: data.event.at, perf: data.event.perf, index: data.event.index });
+        window.__samples.push({
+            at: data.event.at,
+            perf: data.event.perf,
+            index: data.event.index,
+            width: data.event.rendered ? data.event.rendered.width : null,
+            height: data.event.rendered ? data.event.rendered.height : null
+        });
     }
     if (data.event.type === "player") window.__players.push({ replaced: data.event.replaced === true, playerGeneration: data.event.playerGeneration });
 });
@@ -157,6 +163,45 @@ function jumped(stamp, realBase, direction) {
     if (direction === "forward") return stamp > realBase + 30 * 60 * 1000;
     return stamp < realBase - 30 * 60 * 1000;
 }
+
+window.runDimensionProbe = function () {
+    var canvas = document.createElement("canvas");
+    canvas.width = 320;
+    canvas.height = 180;
+    var context = canvas.getContext("2d");
+    context.fillStyle = "#2040c0";
+    context.fillRect(0, 0, 320, 180);
+    var stream;
+    try {
+        stream = canvas.captureStream(1);
+    } catch (error) {
+        return Promise.resolve({ supported: false, label: "local_nondrm_canvas_capture", timing: "real_chrome_timers" });
+    }
+    var video = document.createElement("video");
+    video.muted = true;
+    video.srcObject = stream;
+    document.body.appendChild(video);
+    var start = window.__samples.length;
+    return video.play().then(function () {
+        return wait(1500).then(function () {
+            var matched = window.__samples.slice(start).filter(function (sample) {
+                return sample.width === 320 && sample.height === 180;
+            });
+            return {
+                supported: true,
+                label: "local_nondrm_canvas_capture",
+                notNetflix: true,
+                notQualityDrop: true,
+                timing: "real_chrome_timers_not_virtualized",
+                elementWidth: video.videoWidth,
+                elementHeight: video.videoHeight,
+                samplesWithDimensions: matched.length
+            };
+        });
+    }).catch(function () {
+        return { supported: false, label: "local_nondrm_canvas_capture", timing: "real_chrome_timers" };
+    });
+};
 
 window.readProbe = function () {
     return { clicks: window.__clicks, keydowns: window.__keydowns, players: window.__players.length };

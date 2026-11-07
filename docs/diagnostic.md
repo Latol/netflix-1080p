@@ -82,7 +82,7 @@ HAR、Cookie、token、完全な URL、署名付き URL、会話、作品を識�
 
 ## このビルドが触るもの
 
-`netflix_max_bitrate.js` と `content_script.js` と playercore は変更していません。ページ側では、設定の代入時刻を見るための `globalOptions`、profile 行を残すための `console`、メニューと video の出現を見るための MutationObserver を追加しています。サニタイズ済みの直近ログを `script#nflx1080p-diag-buffer` にも置き、isolated world の bridge が早期イベントを取りこぼさないようにしています。選択、クリック、seek、リロードは呼びません。これらのフックが再生時刻を変えないことは、Netflix 実機では未確認です。VM のブラウザ試験は `docs/vm-boundary.md` です。node の fixture 成功は、スリープ後の画質試験ではありません。
+`netflix_max_bitrate.js` と `content_script.js` と playercore は変更していません。ページ側では、設定の代入時刻を見るための `globalOptions`、profile 行を残すための `console`、メニューと video の出現を見るための MutationObserver を追加しています。サニタイズ済みの直近ログを `script#nflx1080p-diag-buffer` にも置き、isolated world の bridge が早期イベントを取りこぼさないようにしています。選択、クリック、seek、リロードは呼びません。これらのフックが再生時刻を変えないことは、Netflix 実機では未確認です。180 件で止まった記録窓は、長い実行停止のあとにもう一度有限に取る。これは診断の記録だけで、画質の復帰ではない。詳細は `docs/vm-boundary.md` です。
 
 `baseline/v1.34.0` は凍結です。設定を合わせるためにそのブランチは変更していません。診断版は別IDなので、オプション画面で6項目を Save します。
 

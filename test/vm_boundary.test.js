@@ -261,6 +261,9 @@ test("chrome page boundary: clocks, reload detector, baseline and diagnostic", {
                 navigationsDuringProbe: (cdp.navigations.get(sessionId) || 0) - navBefore,
                 serverDocumentGetsDuringProbe: server.counts.documents - getsBefore,
             };
+            if (bundle === "head") {
+                bundles[bundle].dimensions = await evaluate(cdp, sessionId, "window.runDimensionProbe()");
+            }
             if (bundle !== "baseline") {
                 let lifecycle = { attempted: true, supported: false, label: "chromium_page_lifecycle_cdp" };
                 try {
@@ -331,6 +334,11 @@ test("chrome page boundary: clocks, reload detector, baseline and diagnostic", {
         const network = report.bundles[bundle].network;
         if (lifecycle && lifecycle.supported) assert.equal(lifecycle.after.clicks, 1, bundle + " lifecycle");
         if (network && network.supported) assert.equal(network.after.clicks, 1, bundle + " network");
+    }
+    const dimensions = report.bundles.head.dimensions;
+    if (dimensions && dimensions.supported && dimensions.elementWidth === 320) {
+        assert.ok(dimensions.samplesWithDimensions >= 1);
+        assert.equal(dimensions.notQualityDrop, true);
     }
     assert.equal(report.bundles.baseline.signals.clicksAfterSignals, report.bundles.diag5941.signals.clicksAfterSignals);
     assert.equal(report.bundles.diag5941.signals.clicksAfterSignals, report.bundles.head.signals.clicksAfterSignals);

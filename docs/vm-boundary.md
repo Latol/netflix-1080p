@@ -38,6 +38,14 @@ CDP の `Page.setWebLifecycleState`（frozen から active）と `Network.emulat
 
 検出は、主フレームの `Page.frameNavigated` と、watch 用ドキュメントの HTTP GET です。対照として `location.reload()` を 1 回呼ぶと、遷移は 1 から 2、ドキュメント取得も 1 から 2 になりました。`runSignalProbe` の直前直後では、どちらも増えていません。CDP の freeze と network の段階では、この差分を取り直していません。ソースに `location.reload` が無い、という静的確認はこれとは別です。
 
+## 診断記録の穴
+
+180 件で `createSampler` は次のタイマーを止めるが、完了後も `active` を残していた。`isActive()` が true のままなので、同じ URL と video のまま長い停止のあとには、追加サンプルが始まらない。これは診断の記録漏れであり、Netflix の画質低下の原因としては確定していない。
+
+修正後は完了と同時に待機へ戻る。既存の 500ms 監視で、同じドキュメントの `performance.now` の間隔が 15 秒以上のときだけ、有限の記録を 1 本始める。実行中の窓はリセットしない。`Date.now` だけが飛んで `performance.now` の間隔が短いときは始めない。理由は `execution-gap` であり、Mac のスリープ証明ではない。
+
+この VM の Chrome では、統計 textarea なしの 320x180 canvas 映像を、実タイマーで 1 件のサンプルが `videoWidth` / `videoHeight` として記録した。時刻は仮想化していない。これは Netflix の画質低下の再現ではない。
+
 ## 入れなかったもの
 
 画質を戻すコードは入れていません。この入力では、暗号化されていないローカル映像も同梱 playercore も、Netflix のログインなしには ABR の切り替え面まで届きません。低い `videoWidth` を代入して再現と呼ぶことはしていません。

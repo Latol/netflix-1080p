@@ -729,6 +729,76 @@ test("same complete menu snapshot is one event; a later longer list is an update
     assert.equal(second[0].snapshot.count, 3);
 });
 
+test("completed sampler stays idle so a later execution gap can record again", () => {
+    const clock = fakeClock();
+    const samples = [];
+    let completed = 0;
+    const sampler = core.createSampler({
+        intervalMs: 1000,
+        maxSamples: 2,
+        now: () => 0,
+        schedule: clock.schedule,
+        clear: clock.clear,
+        onSample(info) { samples.push(info.index); },
+        onComplete() { completed += 1; },
+    });
+    sampler.start({ wasDiscarded: false });
+    clock.drain();
+    assert.deepEqual(samples, [1, 2]);
+    assert.equal(completed, 1);
+    assert.equal(sampler.isActive(), false);
+    assert.equal(core.decideSamplerAction({ running: sampler.isActive() }, "execution-gap"), "start");
+    assert.equal(core.classifyPollGap({ perfGapMs: 500, dateGapMs: 60 * 60 * 1000 }), null);
+    assert.equal(core.classifyPollGap({ perfGapMs: 20000, dateGapMs: 20000 }), "execution-gap");
+    sampler.start({ wasDiscarded: false });
+    assert.equal(sampler.isActive(), true);
+    assert.equal(core.decideSamplerAction({ running: sampler.isActive() }, "execution-gap"), "note");
+    const during = samples.slice();
+    clock.fireNext();
+    assert.deepEqual(samples, during.concat([1]));
+    const kept = core.sanitizeEvent({
+        type: "sampler",
+        phase: "gap",
+        reason: "execution-gap",
+        perfGapMs: 20000,
+        dateGapMs: -4000,
+        generation: 4,
+    });
+    assert.equal(kept.reason, "execution-gap");
+    assert.equal(kept.phase, "gap");
+    assert.equal(kept.perfGapMs, 20000);
+    assert.equal(kept.dateGapMs, -4000);
+    const leaked = core.sanitizeEvent({
+        type: "sampler",
+        phase: "start",
+        reason: "https://www.netflix.com/watch/81234567?token=abc",
+        title: "Show Name",
+    });
+    assert.equal(leaked.reason, null);
+    assert.equal("title" in leaked, false);
+    assert.equal(JSON.stringify(leaked).includes("81234567"), false);
+    assert.equal(JSON.stringify(leaked).includes("token"), false);
+});
+
+test("completion callback can start the next window without being cleared", () => {
+    const clock = fakeClock();
+    let sampler;
+    sampler = core.createSampler({
+        intervalMs: 1000,
+        maxSamples: 1,
+        now: () => 0,
+        schedule: clock.schedule,
+        clear: clock.clear,
+        onSample() {},
+        onComplete() { sampler.start({ wasDiscarded: true }); },
+    });
+    const first = sampler.start({ wasDiscarded: false });
+    clock.fireNext();
+    assert.equal(sampler.isActive(), true);
+    assert.notEqual(sampler.generation(), first.generation);
+    assert.equal(clock.timers.filter(Boolean).length, 1);
+});
+
 test("wake candidate signals are not wired to reload or override", () => {
     const bitrate = read("netflix_max_bitrate.js");
     const hook = read("diagnostic/page_hook.js");

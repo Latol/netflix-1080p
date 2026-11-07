@@ -124,6 +124,14 @@
         return typeof value === "number" && Number.isFinite(value) ? value : null;
     }
 
+    function boundedGap(value, allowNegative) {
+        const number = finiteOrNull(value);
+        if (number == null) return null;
+        if (!allowNegative && number < 0) return null;
+        if (Math.abs(number) > 7 * 24 * 60 * 60 * 1000) return null;
+        return Math.round(number);
+    }
+
     function integerOrNull(value) {
         const number = finiteOrNull(value);
         return number == null ? null : Math.trunc(number);
@@ -167,6 +175,9 @@
     const ERROR_CODES = ["page-error", "page-rejection", "global-options-hook", "console-hook", "override-hook", "location-hook", "settings-load-failed", "storage-write-failed", "unclassified"];
     const STORAGE_PREFIX = "nflx1080pDiagnosticLog";
     const FLUSH_DELAY_MS = 250;
+    const EXECUTION_GAP_MS = 15000;
+    const SAMPLER_PHASES = ["start", "restart", "cancel", "complete", "gap"];
+    const SAMPLER_REASONS = ["execution-gap"];
     const CHUNK_EVENT_LIMIT = SAMPLE_COUNT + 70;
     const MAX_STORED_CHUNKS = 16;
 
@@ -662,11 +673,14 @@
                 return Object.assign(base, { present: event.present === true });
             case "sampler":
                 return Object.assign(base, {
-                    phase: enumString(event.phase, ["start", "restart", "cancel", "complete"]),
+                    phase: enumString(event.phase, SAMPLER_PHASES),
                     generation: integerOrNull(event.generation),
                     wasDiscarded: event.wasDiscarded === true,
                     intervalMs: integerOrNull(event.intervalMs),
                     maxSamples: integerOrNull(event.maxSamples),
+                    reason: enumString(event.reason, SAMPLER_REASONS),
+                    perfGapMs: boundedGap(event.perfGapMs, false),
+                    dateGapMs: boundedGap(event.dateGapMs, true),
                 });
             default:
                 return null;
@@ -900,6 +914,7 @@
                     },
                 };
             },
+            watching: function () { return watching; },
         };
     }
 
@@ -917,9 +932,17 @@
                 return running ? "continue" : "start";
             case "video-replaced":
                 return running ? "continue" : "ignore";
+            case "execution-gap":
+                return running ? "note" : "start";
             default:
                 return "ignore";
         }
+    }
+
+    function classifyPollGap(input) {
+        const perfGapMs = finiteOrNull(input && input.perfGapMs);
+        if (perfGapMs == null || perfGapMs < EXECUTION_GAP_MS) return null;
+        return "execution-gap";
     }
 
     function createSampler(deps) {
@@ -969,7 +992,12 @@
                 });
                 if (gen !== generation || !active) return;
                 if (active.count >= maxSamples) {
-                    if (deps.onComplete) deps.onComplete({ generation: gen, meta: active.meta });
+                    const meta = active.meta;
+                    if (gen === generation && active && active.generation === gen) {
+                        active = null;
+                        timer = null;
+                    }
+                    if (deps.onComplete) deps.onComplete({ generation: gen, meta: meta });
                     return;
                 }
                 timer = deps.schedule(tick, intervalMs);
@@ -1095,6 +1123,7 @@
         MAX_EVENTS: MAX_EVENTS,
         MAX_STORED_CHUNKS: MAX_STORED_CHUNKS,
         FLUSH_DELAY_MS: FLUSH_DELAY_MS,
+        EXECUTION_GAP_MS: EXECUTION_GAP_MS,
         CHUNK_EVENT_LIMIT: CHUNK_EVENT_LIMIT,
         ERROR_CODES: ERROR_CODES,
         STORE_EXTENSION_ID: STORE_EXTENSION_ID,
@@ -1134,6 +1163,7 @@
         createPersistController: createPersistController,
         createLocationTracker: createLocationTracker,
         decideSamplerAction: decideSamplerAction,
+        classifyPollGap: classifyPollGap,
         createSampler: createSampler,
         createPlayerTracker: createPlayerTracker,
         createMenuTracker: createMenuTracker,

@@ -232,28 +232,34 @@
         },
     });
 
-    function applySampler(action) {
+    function samplerEvent(phase, extra) {
+        const event = {
+            type: "sampler",
+            phase: phase,
+            wasDiscarded: wasDiscarded,
+            intervalMs: Core.SAMPLE_INTERVAL_MS,
+            maxSamples: Core.SAMPLE_COUNT,
+        };
+        if (extra && extra.generation != null) event.generation = extra.generation;
+        if (extra && extra.reason) event.reason = extra.reason;
+        if (extra && extra.perfGapMs != null) event.perfGapMs = extra.perfGapMs;
+        if (extra && extra.dateGapMs != null) event.dateGapMs = extra.dateGapMs;
+        return event;
+    }
+
+    function applySampler(action, extra) {
         if (action === "start" || action === "restart") {
             const handle = sampler.start({ wasDiscarded: wasDiscarded });
-            emit({
-                type: "sampler",
-                phase: action,
-                generation: handle.generation,
-                wasDiscarded: wasDiscarded,
-                intervalMs: Core.SAMPLE_INTERVAL_MS,
-                maxSamples: Core.SAMPLE_COUNT,
-            });
+            emit(samplerEvent(action, Object.assign({ generation: handle.generation }, extra)));
+            return;
+        }
+        if (action === "note") {
+            emit(samplerEvent("gap", Object.assign({ generation: sampler.generation() }, extra)));
             return;
         }
         if (action === "cancel" && sampler.isActive()) {
             sampler.cancel("navigation");
-            emit({
-                type: "sampler",
-                phase: "cancel",
-                wasDiscarded: wasDiscarded,
-                intervalMs: Core.SAMPLE_INTERVAL_MS,
-                maxSamples: Core.SAMPLE_COUNT,
-            });
+            emit(samplerEvent("cancel", extra));
         }
     }
 
@@ -440,9 +446,25 @@
         scanAdded(document.documentElement);
     }
     onHref(String(location.href));
+    let lastPollPerf = performance.now();
+    let lastPollDate = Date.now();
     pollTimer = setInterval(function () {
         try {
+            const perf = performance.now();
+            const date = Date.now();
+            const perfGapMs = perf - lastPollPerf;
+            const dateGapMs = date - lastPollDate;
+            lastPollPerf = perf;
+            lastPollDate = date;
             onHref(String(location.href));
+            const gap = Core.classifyPollGap({ perfGapMs: perfGapMs, dateGapMs: dateGapMs });
+            if (gap && locations.watching()) {
+                applySampler(Core.decideSamplerAction({ running: sampler.isActive() }, gap), {
+                    reason: "execution-gap",
+                    perfGapMs: perfGapMs,
+                    dateGapMs: dateGapMs,
+                });
+            }
         } catch (error) {
             emitError("location-hook");
         }
