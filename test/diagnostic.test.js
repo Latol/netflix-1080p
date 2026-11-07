@@ -290,6 +290,34 @@ test("playercore stats keep playing bitrate apart from throughput", () => {
     assert.equal(emptyValue.source, "none");
 });
 
+test("stats resolution separator accepts x and the multiplication sign without non-ASCII source", () => {
+    // core.js is loaded by pages/options.html as a classic script, so it inherits that page's
+    // encoding. The separator is written as \u00d7 to keep the file ASCII; behaviour is unchanged.
+    const ascii = core.probeStatsText("Playing bitrate (a/v): 192000 / 5800000 (1920x1080)\n");
+    const times = core.probeStatsText("Playing bitrate (a/v): 192000 / 5800000 (1920\u00d71080)\n");
+    assert.deepEqual(times, ascii);
+    assert.equal(times.width, 1920);
+    assert.equal(times.height, 1080);
+    const source = read("diagnostic/core.js");
+    assert.doesNotMatch(source, /[^\x00-\x7f]/, "diagnostic/core.js must stay ASCII");
+    let previous = null;
+    try {
+        previous = require("node:child_process").execFileSync("git", ["show", "5941c8b77eb0938ee86bba1ccc545b96ea1b71e4:diagnostic/core.js"], { cwd: root, stdio: ["ignore", "pipe", "ignore"] }).toString("utf8");
+    } catch (error) {
+        previous = null;
+    }
+    if (previous) {
+        const sandbox = { module: { exports: {} } };
+        sandbox.globalThis = sandbox;
+        require("node:vm").runInNewContext(previous, sandbox, { filename: "core.js@5941c8b" });
+        const old = sandbox.module.exports;
+        // Objects from the other realm have a different Object.prototype; compare plain data.
+        const plain = (value) => JSON.parse(JSON.stringify(value));
+        assert.deepEqual(plain(old.probeStatsText("Playing bitrate (a/v): 192000 / 5800000 (1920\u00d71080)\n")), plain(times));
+        assert.deepEqual(plain(old.probeStatsText("Playing bitrate (a/v): 192000 / 5800000 (1920x1080)\n")), plain(ascii));
+    }
+});
+
 test("rendered resolution stays separate from the selected stream and player trace", () => {
     const selected = core.snapshotOptions([
         { value: "450000", text: "450000 / 40", selected: true },

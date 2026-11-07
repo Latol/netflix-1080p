@@ -216,7 +216,7 @@
             const line = lines[i];
             if (line.length === 0 || line.length > 500) continue;
             if (/https?:\/\//i.test(line) || /\/watch\/\d+/.test(line)) continue;
-            const playing = line.match(/^Playing bitrate \(a\/v\):\s*([^/\n]+?)\s*\/\s*(\S+)(?:\s*\((\d{2,4})\s*[x×]\s*(\d{2,4})\))?\s*$/);
+            const playing = line.match(/^Playing bitrate \(a\/v\):\s*([^/\n]+?)\s*\/\s*(\S+)(?:\s*\((\d{2,4})\s*[x\u00d7]\s*(\d{2,4})\))?\s*$/);
             if (playing) {
                 probe.playingAudioBitrate = parseBitrateToken(playing[1]);
                 probe.playingVideoBitrate = parseBitrateToken(playing[2]);
