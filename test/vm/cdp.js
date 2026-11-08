@@ -15,6 +15,18 @@ function chromeAvailable() {
     return fs.existsSync(chromeBinary());
 }
 
+// Returns false when Chrome is usable, a skip reason when nothing was configured and the
+// default binary is absent, and throws when CHROME_BIN names a file that does not exist:
+// a misconfigured CI job must fail, not quietly skip every browser test.
+function chromeSkipReason() {
+    const bin = chromeBinary();
+    if (fs.existsSync(bin)) return false;
+    if (process.env.CHROME_BIN) {
+        throw new Error("CHROME_BIN is set to " + bin + " but no such file exists");
+    }
+    return "chrome is not installed at " + bin;
+}
+
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -174,6 +186,7 @@ async function attachNewPage(cdp, domains) {
 module.exports = {
     chromeBinary,
     chromeAvailable,
+    chromeSkipReason,
     sleep,
     waitForPortFile,
     Cdp,

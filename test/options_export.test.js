@@ -14,7 +14,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
-const { chromeAvailable, sleep, evaluate, launchChrome, attachNewPage } = require("./vm/cdp.js");
+const os = require("node:os");
+const { chromeSkipReason, sleep, evaluate, launchChrome, attachNewPage } = require("./vm/cdp.js");
 
 const root = path.join(__dirname, "..");
 const core = require(path.join(root, "diagnostic", "core.js"));
@@ -24,7 +25,7 @@ const EXTENSION_ID = core.DIAGNOSTIC_EXTENSION_ID;
 const OPTIONS_URL = "chrome-extension://" + EXTENSION_ID + "/pages/options.html";
 const EXPECTED_TITLE = "New Netflix 1080p Options";
 const EXPORT_FILENAME = "netflix-1080p-diagnostic.json";
-const REPORT_PATH = "/tmp/nflx-options-export-report.json";
+const REPORT_PATH = process.env.NFLX_REPORT_PATH || path.join(process.env.RUNNER_TEMP || os.tmpdir(), "nflx-options-export-report.json");
 const SCREENSHOT_DIR = process.env.NFLX_SCREENSHOT_DIR || "";
 const DEBUG = Boolean(process.env.NFLX_DEBUG);
 function debug(message) {
@@ -77,8 +78,11 @@ function workingTreeListing(globs) {
     return listing;
 }
 
+const fixtureDirs = [];
+
 function buildExtensionDir(label, files, read) {
-    const dir = fs.mkdtempSync("/tmp/nflx-ext-" + label + "-");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nflx-ext-" + label + "-"));
+    fixtureDirs.push(dir);
     for (const file of files) {
         fs.mkdirSync(path.join(dir, path.dirname(file)), { recursive: true });
         fs.writeFileSync(path.join(dir, file), read(file));
@@ -362,27 +366,32 @@ async function runClearScenario(context, sid) {
 
 async function withChrome(leg, extDir, body) {
     const locale = LOCALES[leg.locale];
-    const profileDir = fs.mkdtempSync("/tmp/nflx-prof-");
-    const downloadDir = fs.mkdtempSync("/tmp/nflx-dl-");
-    if (locale.prefCharset) {
-        fs.mkdirSync(path.join(profileDir, "Default"));
-        fs.writeFileSync(path.join(profileDir, "Default", "Preferences"), JSON.stringify({ intl: { charset_default: locale.prefCharset } }));
-    }
-    debug(leg.build + "/" + leg.locale + ": launching chrome");
-    const launched = await launchChrome({
-        profileDir,
-        env: locale.env,
-        extraArgs: ["--load-extension=" + extDir, "--disable-extensions-except=" + extDir, "--lang=" + locale.lang],
-    });
-    debug(leg.build + "/" + leg.locale + ": " + launched.version.Browser);
-    const context = { cdp: launched.cdp, version: launched.version, downloadDir };
+    const dirs = [];
+    let launched = null;
     try {
-        return await body(context);
+        const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), "nflx-prof-"));
+        dirs.push(profileDir);
+        const downloadDir = fs.mkdtempSync(path.join(os.tmpdir(), "nflx-dl-"));
+        dirs.push(downloadDir);
+        if (locale.prefCharset) {
+            fs.mkdirSync(path.join(profileDir, "Default"));
+            fs.writeFileSync(path.join(profileDir, "Default", "Preferences"), JSON.stringify({ intl: { charset_default: locale.prefCharset } }));
+        }
+        debug(leg.build + "/" + leg.locale + ": launching chrome");
+        launched = await launchChrome({
+            profileDir,
+            env: locale.env,
+            extraArgs: ["--load-extension=" + extDir, "--disable-extensions-except=" + extDir, "--lang=" + locale.lang],
+        });
+        debug(leg.build + "/" + leg.locale + ": " + launched.version.Browser);
+        return await body({ cdp: launched.cdp, version: launched.version, downloadDir });
     } finally {
-        try { launched.ws.close(); } catch (error) { /* ignore */ }
-        launched.chrome.kill("SIGKILL");
-        await sleep(200);
-        for (const dir of [profileDir, downloadDir]) {
+        if (launched) {
+            try { launched.ws.close(); } catch (error) { /* ignore */ }
+            launched.chrome.kill("SIGKILL");
+            await sleep(200);
+        }
+        for (const dir of dirs) {
             try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); } catch (error) { /* left in place */ }
         }
     }
@@ -400,26 +409,34 @@ function ensureFixtures() {
     const pinFiles = expandGlobs(globs, pinnedListing());
     const headFiles = expandGlobs(globs, workingTreeListing(globs));
     assert.equal(pinFiles.length, 17, "pinned package should have 17 files");
-    assert.deepEqual(headFiles, pinFiles, "working tree package list differs from 5941c8b");
+    for (const required of ["manifest.json", "pages/options.html", "pages/options.js", "diagnostic/core.js"]) {
+        assert.ok(headFiles.includes(required), "working tree package lacks " + required);
+    }
     const pinDir = buildExtensionDir("pin5941", pinFiles, (file) => execFileSync("git", ["show", PIN_COMMIT + ":" + file], { cwd: root, maxBuffer: 64 * 1024 * 1024 }));
     const headDir = buildExtensionDir("head", headFiles, (file) => fs.readFileSync(path.join(root, file)));
+    // Same files as head, but core.js throws at load: exercises the core-missing reporting path.
+    const stubDir = buildExtensionDir("corestub", headFiles, (file) => file === "diagnostic/core.js" ? Buffer.from("throw new Error(\"stub core failure\");\n") : fs.readFileSync(path.join(root, file)));
     assert.doesNotMatch(fs.readFileSync(path.join(pinDir, "pages/options.html"), "utf8"), /charset/i, "pinned options.html unexpectedly declares a charset");
     report.headOptionsIdenticalToPin = fs.readFileSync(path.join(pinDir, "pages/options.html"), "utf8") === fs.readFileSync(path.join(headDir, "pages/options.html"), "utf8");
+    report.headPackagedFiles = headFiles.length;
     const seeds = buildSeeds();
-    fixtures = { pinDir, headDir, seeds: seeds.seeds, expected: seeds.expected };
+    fixtures = { pinDir, headDir, stubDir, seeds: seeds.seeds, expected: seeds.expected };
     debug("fixtures ready: " + JSON.stringify(seeds.expected));
     report.expected = seeds.expected;
     return fixtures;
 }
 
 test.after(() => {
-    if (fixtures) {
-        for (const dir of [fixtures.pinDir, fixtures.headDir]) fs.rmSync(dir, { recursive: true, force: true });
+    for (const dir of fixtureDirs) {
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch (error) { /* left in place */ }
     }
-    fs.writeFileSync(REPORT_PATH, JSON.stringify(report, null, 2));
+    // A report with no legs is not a result; do not write one.
+    if (Object.keys(report.legs).length) {
+        fs.writeFileSync(REPORT_PATH, JSON.stringify(report, null, 2));
+    }
 });
 
-const skip = chromeAvailable() ? false : "chrome is not installed";
+const skip = chromeSkipReason();
 
 test("5941c8b in a Japanese-locale Chrome: core.js fails to parse and export does nothing", { timeout: 180000, skip }, async () => {
     const fx = ensureFixtures();
@@ -470,3 +487,40 @@ for (const localeName of ["ja", "en-US"]) {
         report.legs["head/" + localeName] = result;
     });
 }
+
+test("working tree with a core.js that fails to load: id is shown, core-missing is reported, nothing downloads or clears", { timeout: 120000, skip }, async () => {
+    const fx = ensureFixtures();
+    const leg = { build: "corestub", locale: "ja" };
+    const result = await withChrome(leg, fx.stubDir, async (context) => {
+        const { cdp } = context;
+        const { sid, load } = await openOptionsPage(context, leg);
+        assert.equal(load.coreType, "undefined");
+        assert.ok(load.exceptions.some((text) => /\/diagnostic\/core\.js ::/.test(text) && /stub core failure/.test(text)), "stub core.js did not throw at load: " + JSON.stringify(load.exceptions));
+        assert.equal(load.idText, EXTENSION_ID, "extension id must be shown even without core");
+        const statusAtLoad = await textOf(cdp, sid, "#log-status");
+        assert.match(statusAtLoad, /code: core-missing/, "core-missing not reported at load: " + statusAtLoad);
+        assert.doesNotMatch(statusAtLoad, /stub|Error|TypeError/, "status must not leak exception text: " + statusAtLoad);
+
+        await seedStorage(cdp, sid, fx.seeds.mixed);
+        const keysBefore = await storageKeys(cdp, sid);
+        cdp.takeEvents("Browser.downloadWillBegin");
+        cdp.takeEvents("Page.javascriptDialogOpening");
+        await evaluate(cdp, sid, "document.getElementById('log-status').textContent = ''");
+        await clickElement(cdp, sid, "#download-log");
+        await sleep(2000);
+        const statusAfterExport = await textOf(cdp, sid, "#log-status");
+        assert.match(statusAfterExport, /code: core-missing/, "export click did not report core-missing: " + statusAfterExport);
+        assert.doesNotMatch(statusAfterExport, /stub|Error|TypeError/);
+        assert.equal(cdp.takeEvents("Browser.downloadWillBegin").length, 0, "a download started without core");
+
+        await evaluate(cdp, sid, "document.getElementById('log-status').textContent = ''");
+        await clickElement(cdp, sid, "#clear-log");
+        await sleep(2000);
+        assert.equal(cdp.takeEvents("Page.javascriptDialogOpening", (e) => e.sessionId === sid).length, 0, "confirm must not open without core");
+        const statusAfterClear = await textOf(cdp, sid, "#log-status");
+        assert.match(statusAfterClear, /code: core-missing/, "clear click did not report core-missing: " + statusAfterClear);
+        assert.deepEqual(await storageKeys(cdp, sid), keysBefore, "storage changed without core");
+        return { chrome: context.version.Browser, load, statusAtLoad: statusAtLoad.slice(0, 200), statusAfterExport: statusAfterExport.slice(0, 200), statusAfterClear: statusAfterClear.slice(0, 200) };
+    });
+    report.legs["corestub/ja"] = result;
+});

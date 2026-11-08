@@ -148,7 +148,7 @@ function downloadDiagnosticLog() {
 		const dropped = payload.retention && payload.retention.droppedOldest;
 		let message = "書き出しました: イベント " + eventCount + " 件 / チャンク " + chunkCount + " 個 / 約 " + Math.ceil(blob.size / 1024) + " KB。";
 		if (eventCount === 0) {
-			message += "記録は 0 件です。再生統計を開いたまま 3 分再生してから、もう一度書き出してください。";
+			message += "記録は 0 件です。この診断版を有効にしたまま Netflix の再生ページを開いて再生してから、もう一度書き出してください。";
 		}
 		if (dropped) {
 			message += "上限を超えた古い記録 " + dropped + " 件は落としています。";

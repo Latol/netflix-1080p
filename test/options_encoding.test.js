@@ -64,7 +64,9 @@ test("options export reports failures instead of failing silently", () => {
     assert.match(source, /window\.confirm\(/, "clearing the log must ask for confirmation");
     assert.match(source, /document\.body\.appendChild\(link\)/, "download anchor must be attached to the document");
     assert.match(source, /setTimeout\([\s\S]{0,120}?URL\.revokeObjectURL/, "object URL must be revoked later, not synchronously");
-    assert.doesNotMatch(source, /error\.message|err\.message/, "failure text must use fixed codes, never exception text");
+    // Source-level guard only; the behavioural check (status shows "code: core-missing" and no
+    // exception text) lives in test/options_export.test.js.
+    assert.doesNotMatch(source, /\b(e|err|error|ex|ignored|reason)\.(message|stack|name)\b|String\((e|err|error|ex|ignored|reason)\)|\$\{(e|err|error|ex|ignored|reason)\b/, "failure text must use fixed codes, never exception text");
     assert.doesNotMatch(source, /DIAGNOSTIC_LOG_KEY/, "unused constant removed");
 });
 
@@ -73,6 +75,9 @@ test("negative control: the 5941c8b core.js really failed under Shift_JIS", (t) 
     try {
         bytes = execFileSync("git", ["show", BROKEN_COMMIT + ":diagnostic/core.js"], { cwd: root, stdio: ["ignore", "pipe", "ignore"] });
     } catch (error) {
+        if (process.env.CI) {
+            throw new Error("commit " + BROKEN_COMMIT.slice(0, 7) + " is not available; CI must check out full history (fetch-depth: 0)");
+        }
         t.skip("commit " + BROKEN_COMMIT.slice(0, 7) + " is not available in this checkout");
         return;
     }

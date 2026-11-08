@@ -298,23 +298,26 @@ test("stats resolution separator accepts x and the multiplication sign without n
     assert.deepEqual(times, ascii);
     assert.equal(times.width, 1920);
     assert.equal(times.height, 1080);
-    const source = read("diagnostic/core.js");
-    assert.doesNotMatch(source, /[^\x00-\x7f]/, "diagnostic/core.js must stay ASCII");
-    let previous = null;
+    assert.doesNotMatch(read("diagnostic/core.js"), /[^\x00-\x7f]/, "diagnostic/core.js must stay ASCII");
+});
+
+test("stats resolution parsing matches the 5941c8b core for both separators", (t) => {
+    let previous;
     try {
         previous = require("node:child_process").execFileSync("git", ["show", "5941c8b77eb0938ee86bba1ccc545b96ea1b71e4:diagnostic/core.js"], { cwd: root, stdio: ["ignore", "pipe", "ignore"] }).toString("utf8");
     } catch (error) {
-        previous = null;
+        if (process.env.CI) throw new Error("commit 5941c8b is not available; CI must check out full history (fetch-depth: 0)");
+        t.skip("commit 5941c8b is not available in this checkout");
+        return;
     }
-    if (previous) {
-        const sandbox = { module: { exports: {} } };
-        sandbox.globalThis = sandbox;
-        require("node:vm").runInNewContext(previous, sandbox, { filename: "core.js@5941c8b" });
-        const old = sandbox.module.exports;
-        // Objects from the other realm have a different Object.prototype; compare plain data.
-        const plain = (value) => JSON.parse(JSON.stringify(value));
-        assert.deepEqual(plain(old.probeStatsText("Playing bitrate (a/v): 192000 / 5800000 (1920\u00d71080)\n")), plain(times));
-        assert.deepEqual(plain(old.probeStatsText("Playing bitrate (a/v): 192000 / 5800000 (1920x1080)\n")), plain(ascii));
+    const sandbox = { module: { exports: {} } };
+    sandbox.globalThis = sandbox;
+    require("node:vm").runInNewContext(previous, sandbox, { filename: "core.js@5941c8b" });
+    const old = sandbox.module.exports;
+    // Objects from the other realm have a different Object.prototype; compare plain data.
+    const plain = (value) => JSON.parse(JSON.stringify(value));
+    for (const line of ["Playing bitrate (a/v): 192000 / 5800000 (1920\u00d71080)\n", "Playing bitrate (a/v): 192000 / 5800000 (1920x1080)\n"]) {
+        assert.deepEqual(plain(core.probeStatsText(line)), plain(old.probeStatsText(line)));
     }
 });
 

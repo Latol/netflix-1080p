@@ -9,6 +9,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # the encoding and separator tests compare against the pinned 5941c8b core.js
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -48,17 +51,23 @@ jobs:
       - name: Install Chrome for Testing
         id: cft
         run: |
-          output=$(npx --yes @puppeteer/browsers install chrome@stable --path "$RUNNER_TEMP/cft")
+          # The installer is pinned; the Chrome build is whatever "stable" is on the day, and the
+          # test records the version it ran under in the report.
+          output=$(npx --yes @puppeteer/browsers@3.2.6 install chrome@stable --path "$RUNNER_TEMP/cft")
           echo "$output"
-          echo "bin=${output##* }" >> "$GITHUB_OUTPUT"
-      - name: Options page export (pinned 5941c8b and head, ja and en-US)
+          bin="${output##* }"
+          test -x "$bin" || { echo "no executable chrome at: $bin"; exit 1; }
+          "$bin" --version
+          echo "bin=$bin" >> "$GITHUB_OUTPUT"
+      - name: Options page export (pinned 5941c8b, head, core stub; ja and en-US)
         run: node --test test/options_export.test.js
         env:
           CHROME_BIN: ${{ steps.cft.outputs.bin }}
+          NFLX_REPORT_PATH: ${{ runner.temp }}/nflx-options-export-report.json
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: options-export-report
-          path: /tmp/nflx-options-export-report.json
+          path: ${{ runner.temp }}/nflx-options-export-report.json
           if-no-files-found: ignore

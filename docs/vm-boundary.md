@@ -4,7 +4,7 @@ Linux の Chrome で、拡張の実ファイルをローカル fixture に読ん
 
 ## 実行
 
-この VM の Chrome は `156.0.8078.47` です。ユーザーの Mac にある `156.0.8078.74` とは別のビルドです。オプション画面の書き出し試験は別の環境、Linux の Chrome for Testing `153.0.8010.12`（Playwright 同梱）で実行しました。各試験は `/json/version` の値を report に書くので、実際に使った版はそちらを見ます。
+Chrome の版は試験ごとに違います。`vm_boundary` の記録は Chrome `156.0.8078.47`、`options_export` の記録は Chrome for Testing `153.0.8010.12`（Playwright 同梱）です。どちらもユーザーの Mac にある `156.0.8078.74` ではありません。各試験は `/json/version` の値を report に書くので、実際に使った版はそちらを見ます。CI の `options-export` job は installer（`@puppeteer/browsers`）だけを固定し、Chrome はその日の stable を入れます。
 
 ```text
 node --test test/diagnostic.test.js test/options_encoding.test.js
@@ -78,6 +78,7 @@ VM だけでその遷移を再生するのに足りないのは、選択され�
 
 - 5941c8b / ja: `document.characterSet` は `Shift_JIS`。読み込み時に `core.js` から `SyntaxError: Invalid regular expression: missing /`。`Netflix1080pDiagCore` は未定義、拡張 ID の表示は空、ボタンの文字は `險ｺ譁ｭ繝ｭ繧ｰ…` の文字化け。押すと `Error handling response: TypeError: Cannot read properties of undefined (reading 'mergeDiagnosticStorage')` が記録され、ダウンロードは始まらず、status も空のまま。空の storage でも、記録ありの storage でも同じ。
 - 5941c8b / en-US: `windows-1252`。`core.js` は読み込まれ、書き出しは成功する。文字は化ける。不動はロケール依存。
+- head の `core.js` を「読み込み時に throw する stub」に置き換えた拡張（ja）: 拡張 ID は表示され、`#log-status` に `code: core-missing` が出て例外文は含まれない。書き出し・消去を押しても同じ code が出るだけで、ダウンロードも confirm も storage の変化も起きない。
 - head / ja と en-US: `UTF-8`。文字化けなし。空、3 チャンク、16 チャンク 4000 件（書き出し約 14 MB）、legacy key と不正値を混ぜた storage のすべてで、ファイル名 `netflix-1080p-diagnostic.json` のダウンロードが完了し、JSON の schema、件数、チャンク数が一致する。消去は `confirm` を出し、キャンセルでは何も消えず、承認では診断チャンクだけ消える。
 
 示していないこと:

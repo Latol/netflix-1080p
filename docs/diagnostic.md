@@ -52,8 +52,8 @@ Web Store 版へ戻すときは、診断版を削除または無効にし、Web 
 
 オプション画面は UTF-8 を宣言します。5941c8b までの `pages/options.html` には charset 宣言がなく、`chrome-extension://` の応答にも charset が付かないため、日本語ロケールの Chrome は既定の Shift_JIS でページと、ページが読み込む `core.js` を復号していました。`core.js` の正規表現に含まれていた生の `×` は Shift_JIS では後続の `]` を巻き込み、`core.js` 全体が SyntaxError で読み込まれず、「診断ログを書き出す」「診断ログを消去」は押しても何も起きませんでした（記録側の `core.js` は manifest 経由の content script として UTF-8 で読まれるため、この影響を受けません）。これは Linux の Chrome for Testing 153 で `--lang=ja` と `intl.charset_default=Shift_JIS` を与えて再現したものです。Mac の Chrome 156 で同じ原因だったかは未確認です。
 
-- 書き出しの成否は `#log-status` に出ます。成功時は「イベント N 件 / チャンク M 個 / 約 K KB」です。0 件なら 0 件と明示します。
-- 失敗時は固定の code（`core-missing`、`storage-read-failed`、`export-build-failed`、`download-failed`）だけを出します。例外文は表示しません。
+- 書き出しの成否は `#log-status` に出ます。成功時は「イベント N 件 / チャンク M 個 / 約 K KB」です。0 件なら 0 件と明示します（0 件は記録が一度も動いていない印で、統計表示の有無とは関係ありません）。
+- 失敗時は固定の code（書き出し: `core-missing`、`storage-read-failed`、`export-build-failed`、`download-failed`。消去: `core-missing`、`storage-read-failed`、`storage-remove-failed`）だけを出します。例外文は表示しません。
 - 「診断ログを消去」は確認ダイアログを出してから消します。キャンセルすれば何も消えません。
 - `core.js` が読み込めなかった場合も、拡張 ID は表示し、`core-missing` を status に出します。
 
@@ -86,7 +86,7 @@ HAR、Cookie、token、完全な URL、署名付き URL、会話、作品を識�
 3. 診断版のオプションで6項目をすべてチェックして Save する。一致の表示を確認する。
 4. 1080p が通常出る作品で通常の再読み込みをしたあと、再生統計を手動で開く。この playercore では Ctrl+Alt+Shift+D、または Ctrl+Alt+Shift+Q です。開いたまま 3 分再生する。診断フックは統計を自分では開きません。
 5. 同じ作品で Auto Tab Discard により休止し、タブを選び直す。自動のページ再読み込みはしない。戻ったあとに、もう一度同じ操作で再生統計を開く。開いたまま 3 分見る。統計を開き直さないと、復帰後の bitrate と codec は null のままです。
-6. オプションからログを書き出す。`#log-status` の件数で通常再生と休止復帰の両方が残っていることを確認する。0 件なら記録が動いていないので、再生統計を開いたまま 3 分再生してからやり直す。
+6. オプションからログを書き出す。`#log-status` の件数で通常再生と休止復帰の両方が残っていることを確認する。0 件なら、この診断版が有効な状態で watch ページが開かれていない（記録そのものが動いていない）ので、手順 1〜5 を見直す。再生統計を開いていないだけなら、件数は残り bitrate / codec だけが null になる。
 7. 通常再生、通常の再読み込み、タブ切替、次話移動も、比較用に残せるなら残す。
 
 合成テストは `node --test test/diagnostic.test.js` です。これは候補順の逆転、候補の遅延、同一 URL のプレーヤー交換、メニュー不在、移動中のキャンセル、手動 Override、`setMaxBitrate` が false のときのループ期待、再入と有限サンプルを fixture で見ます。Netflix 上でその現象が起きたことの確認ではありません。
